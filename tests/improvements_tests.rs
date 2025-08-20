@@ -102,48 +102,20 @@ fn test_parallel_execution() {
 // Test 4: ContainerConfig Docker Integration
 #[test]
 fn test_container_config_docker_integration() {
-    #[cfg(feature = "docker")]
-    {
-        // Use a lightweight, fast-pulling image for testing
-        let container = ContainerConfig::new("alpine:latest")
-            .ready_timeout(Duration::from_secs(10));
-        
-        // Test container lifecycle (real Docker API)
-        let container_info = container.start().unwrap();
-        
-        // Real Docker container ID should be a long hex string
-        assert!(container_info.container_id.len() >= 12, "Docker container ID should be at least 12 characters");
-        assert!(container_info.container_id.chars().all(|c| c.is_ascii_hexdigit()), "Docker container ID should be hexadecimal");
-        
-        // Test stopping container
-        let stop_result = container.stop(&container_info.container_id);
-        assert!(stop_result.is_ok());
-    }
+    // Use a lightweight, fast-pulling image for testing
+    let container = ContainerConfig::new("alpine:latest")
+        .ready_timeout(Duration::from_secs(10));
     
-    #[cfg(not(feature = "docker"))]
-    {
-        // Mock implementation test
-        let container = ContainerConfig::new("nginx:alpine")
-            .port(8080, 80)
-            .env("NGINX_HOST", "localhost")
-            .name("test_nginx")
-            .ready_timeout(Duration::from_secs(30));
-        
-        // Test container configuration
-        assert_eq!(container.image, "nginx:alpine");
-        assert_eq!(container.ports, vec![(8080, 80)]);
-        assert_eq!(container.env, vec![("NGINX_HOST".to_string(), "localhost".to_string())]);
-        assert_eq!(container.name, Some("test_nginx".to_string()));
-        assert_eq!(container.ready_timeout, Duration::from_secs(30));
-        
-        // Test container lifecycle (mock mode)
-        let container_info = container.start().unwrap();
-        assert!(container_info.container_id.starts_with("mock_"));
-        
-        // Test stopping container
-        let stop_result = container.stop(&container_info.container_id);
-        assert!(stop_result.is_ok());
-    }
+    // Test container lifecycle (real Docker API)
+    let container_info = container.start().unwrap();
+    
+    // Real Docker container ID should be a long hex string
+    assert!(container_info.container_id.len() >= 12, "Docker container ID should be at least 12 characters");
+    assert!(container_info.container_id.chars().all(|c| c.is_ascii_hexdigit()), "Docker container ID should be hexadecimal");
+    
+    // Test stopping container
+    let stop_result = container.stop(&container_info.container_id);
+    assert!(stop_result.is_ok());
 }
 
 // Test 5: ContainerConfig Builder Pattern
@@ -273,35 +245,17 @@ fn test_multiple_container_configurations() {
 // Test 9: ContainerConfig Error Handling
 #[test]
 fn test_container_config_error_handling() {
-    #[cfg(feature = "docker")]
-    {
-        // Test with non-existent image - should fail appropriately
-        let container = ContainerConfig::new("nonexistent-image-12345:invalid")
-            .ready_timeout(Duration::from_secs(5));
-        
-        // This should fail with real Docker API
-        let result = container.start();
-        assert!(result.is_err(), "Should fail with non-existent Docker image");
-        
-        let error_msg = result.unwrap_err().to_string();
-        assert!(error_msg.contains("Failed to create container") || error_msg.contains("pull"), 
-                "Error should mention container creation or image pull failure");
-    }
+    // Test with non-existent image - should fail appropriately
+    let container = ContainerConfig::new("nonexistent-image-12345:invalid")
+        .ready_timeout(Duration::from_secs(5));
     
-    #[cfg(not(feature = "docker"))]
-    {
-        // Mock implementation test
-        let container = ContainerConfig::new("invalid:image");
-        
-        // Test that invalid operations are handled gracefully
-        // (Mock implementation always succeeds)
-        let result = container.start();
-        assert!(result.is_ok()); // Mock implementation always succeeds
-        
-        let container_info = result.unwrap();
-        let stop_result = container.stop(&container_info.container_id);
-        assert!(stop_result.is_ok());
-    }
+    // This should fail with real Docker API
+    let result = container.start();
+    assert!(result.is_err(), "Should fail with non-existent Docker image");
+    
+    let error_msg = result.unwrap_err().to_string();
+    assert!(error_msg.contains("Failed to create container") || error_msg.contains("pull"), 
+            "Error should mention container creation or image pull failure");
 }
 
 // Test 10: Performance Under Load

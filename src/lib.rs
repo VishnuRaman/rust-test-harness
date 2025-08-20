@@ -481,6 +481,9 @@ pub fn run_tests_with_config(config: TestConfig) -> i32 {
         }
     }
     
+    // Clean up any remaining containers
+    cleanup_all_containers();
+    
     if failed > 0 {
         error!("❌ Test execution failed with {} failures", failed);
         1
@@ -1734,139 +1737,78 @@ impl ContainerConfig {
     
     /// Start a container with this configuration using Docker API
     pub fn start(&self) -> Result<ContainerInfo, Box<dyn std::error::Error + Send + Sync>> {
-        #[cfg(feature = "docker")]
-        {
-            // Real Docker API implementation - spawn Tokio runtime for async operations
-            let runtime = tokio::runtime::Runtime::new()
-                .map_err(|e| format!("Failed to create Tokio runtime: {}", e))?;
-            
-            let result = runtime.block_on(async {
-                use bollard::Docker;
-                use bollard::models::{ContainerCreateBody, HostConfig, PortBinding, PortMap};
-                
-                // Connect to Docker daemon
-                let docker = Docker::connect_with_local_defaults()
-                    .map_err(|e| format!("Failed to connect to Docker: {}", e))?;
-                
-                // Build port bindings - handle both manual and auto-ports
-                let mut port_bindings = PortMap::new();
-                let mut auto_port_mappings = Vec::new();
-                
-                // Handle manual port mappings
-                for (host_port, container_port) in &self.ports {
-                    let binding = vec![PortBinding {
-                        host_ip: Some("127.0.0.1".to_string()),
-                        host_port: Some(host_port.to_string()),
-                    }];
-                    port_bindings.insert(format!("{}/tcp", container_port), Some(binding));
-                }
-                
-                // Handle auto-ports - find available host ports
-                for container_port in &self.auto_ports {
-                    let host_port = Self::find_available_port()
-                        .map_err(|e| format!("Failed to find available port: {}", e))?;
-                    
-                    let binding = vec![PortBinding {
-                        host_ip: Some("127.0.0.1".to_string()),
-                        host_port: Some(host_port.to_string()),
-                    }];
-                    port_bindings.insert(format!("{}/tcp", container_port), Some(binding));
-                    
-                    // Store the mapping for return
-                    auto_port_mappings.push((host_port, *container_port));
-                }
-                
-                // Build environment variables
-                let env_vars: Vec<String> = self.env.iter()
-                    .map(|(k, v)| format!("{}={}", k, v))
-                    .collect();
-                
-                // Create container configuration using the correct bollard 0.19 API
-                let container_config = ContainerCreateBody {
-                    image: Some(self.image.clone()),
-                    env: Some(env_vars),
-                    host_config: Some(HostConfig {
-                        port_bindings: Some(port_bindings),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                };
-                
-                // Create the container
-                let container = docker.create_container(None::<bollard::query_parameters::CreateContainerOptions>, container_config)
-                    .await
-                    .map_err(|e| format!("Failed to create container: {}", e))?;
-                let id = container.id;
-                
-                // Start the container
-                docker.start_container(&id, None::<bollard::query_parameters::StartContainerOptions>)
-                    .await
-                    .map_err(|e| format!("Failed to start container: {}", e))?;
-                
-                // Wait for container to be ready
-                self.wait_for_ready_async(&docker, &id).await?;
-                
-                // Build port mappings and URLs
-                let mut all_port_mappings = self.ports.clone();
-                all_port_mappings.extend(auto_port_mappings);
-                
-                let urls: Vec<String> = all_port_mappings.iter()
-                    .map(|(host_port, _)| format!("http://localhost:{}", host_port))
-                    .collect();
-                
-                let container_info = ContainerInfo {
-                    container_id: id.clone(),
-                    image: self.image.clone(),
-                    name: self.name.clone(),
-                    urls,
-                    port_mappings: all_port_mappings,
-                    auto_cleanup: self.auto_cleanup,
-                };
-                
-                Ok::<ContainerInfo, Box<dyn std::error::Error + Send + Sync>>(container_info)
-            });
-            
-            match result {
-                Ok(container_info) => {
-                    info!("🚀 Started Docker container {} with image {}", container_info.container_id, self.image);
-                    
-                    // Register for auto-cleanup if enabled
-                    if container_info.auto_cleanup {
-                        register_container_for_cleanup(&container_info.container_id);
-                    }
-                    
-                    // Log port information
-                    if !container_info.port_mappings.is_empty() {
-                        info!("🌐 Container {} exposed on ports:", container_info.container_id);
-                        for (host_port, container_port) in &container_info.port_mappings {
-                            info!("   {} -> {} (http://localhost:{})", host_port, container_port, host_port);
-                        }
-                    }
-                    
-                    Ok(container_info)
-                }
-                Err(e) => Err(e),
-            }
-        }
+        // Real Docker API implementation - spawn Tokio runtime for async operations
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| format!("Failed to create Tokio runtime: {}", e))?;
         
-        #[cfg(not(feature = "docker"))]
-        {
-            // Mock implementation for when Docker feature is not enabled
-            let container_id = format!("mock_{}", uuid::Uuid::new_v4().to_string()[..8].to_string());
-            info!("🚀 Starting mock container {} with image {}", container_id, self.image);
+        let result = runtime.block_on(async {
+            use bollard::Docker;
+            use bollard::models::{ContainerCreateBody, HostConfig, PortBinding, PortMap};
             
-            // Simulate container startup time
-            std::thread::sleep(Duration::from_millis(100));
+            // Connect to Docker daemon
+            let docker = Docker::connect_with_local_defaults()
+                .map_err(|e| format!("Failed to connect to Docker: {}", e))?;
             
-            // Build port mappings and URLs for mock
-            let mut all_port_mappings = self.ports.clone();
+            // Build port bindings - handle both manual and auto-ports
+            let mut port_bindings = PortMap::new();
             let mut auto_port_mappings = Vec::new();
             
-            // Generate mock auto-ports
-            for container_port in &self.auto_ports {
-                let mock_host_port = 10000 + (container_port % 1000); // deterministic mock port
-                auto_port_mappings.push((mock_host_port, *container_port));
+            // Handle manual port mappings
+            for (host_port, container_port) in &self.ports {
+                let binding = vec![PortBinding {
+                    host_ip: Some("127.0.0.1".to_string()),
+                    host_port: Some(host_port.to_string()),
+                }];
+                port_bindings.insert(format!("{}/tcp", container_port), Some(binding));
             }
+            
+            // Handle auto-ports - find available host ports
+            for container_port in &self.auto_ports {
+                let host_port = Self::find_available_port()
+                    .map_err(|e| format!("Failed to find available port: {}", e))?;
+                
+                let binding = vec![PortBinding {
+                    host_ip: Some("127.0.0.1".to_string()),
+                    host_port: Some(host_port.to_string()),
+                }];
+                port_bindings.insert(format!("{}/tcp", container_port), Some(binding));
+                
+                // Store the mapping for return
+                auto_port_mappings.push((host_port, *container_port));
+            }
+            
+            // Build environment variables
+            let env_vars: Vec<String> = self.env.iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect();
+            
+            // Create container configuration using the correct bollard 0.19 API
+            let container_config = ContainerCreateBody {
+                image: Some(self.image.clone()),
+                env: Some(env_vars),
+                host_config: Some(HostConfig {
+                    port_bindings: Some(port_bindings),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            
+            // Create the container
+            let container = docker.create_container(None::<bollard::query_parameters::CreateContainerOptions>, container_config)
+                .await
+                .map_err(|e| format!("Failed to create container: {}", e))?;
+            let id = container.id;
+            
+            // Start the container
+            docker.start_container(&id, None::<bollard::query_parameters::StartContainerOptions>)
+                .await
+                .map_err(|e| format!("Failed to start container: {}", e))?;
+            
+            // Wait for container to be ready
+            self.wait_for_ready_async(&docker, &id).await?;
+            
+            // Build port mappings and URLs
+            let mut all_port_mappings = self.ports.clone();
             all_port_mappings.extend(auto_port_mappings);
             
             let urls: Vec<String> = all_port_mappings.iter()
@@ -1874,7 +1816,7 @@ impl ContainerConfig {
                 .collect();
             
             let container_info = ContainerInfo {
-                container_id: container_id.clone(),
+                container_id: id.clone(),
                 image: self.image.clone(),
                 name: self.name.clone(),
                 urls,
@@ -1882,111 +1824,104 @@ impl ContainerConfig {
                 auto_cleanup: self.auto_cleanup,
             };
             
-            info!("✅ Mock container {} started successfully", container_id);
-            if !container_info.port_mappings.is_empty() {
-                info!("🌐 Mock container {} exposed on ports:", container_id);
-                for (host_port, container_port) in &container_info.port_mappings {
-                    info!("   {} -> {} (http://localhost:{})", host_port, container_port, host_port);
+            Ok::<ContainerInfo, Box<dyn std::error::Error + Send + Sync>>(container_info)
+        });
+        
+        match result {
+            Ok(container_info) => {
+                info!("🚀 Started Docker container {} with image {}", container_info.container_id, self.image);
+                
+                // Register for auto-cleanup if enabled
+                if container_info.auto_cleanup {
+                    register_container_for_cleanup(&container_info.container_id);
                 }
+                
+                // Log port information
+                if !container_info.port_mappings.is_empty() {
+                    info!("🌐 Container {} exposed on ports:", container_info.container_id);
+                    for (host_port, container_port) in &container_info.port_mappings {
+                        info!("   {} -> {} (http://localhost:{})", host_port, container_port, host_port);
+                    }
+                }
+                
+                Ok(container_info)
             }
-            
-            Ok(container_info)
+            Err(e) => Err(e),
         }
     }
     
     /// Stop a container by ID using Docker API
     pub fn stop(&self, container_id: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        #[cfg(feature = "docker")]
-        {
-            // Real Docker API implementation - spawn Tokio runtime for async operations
-            let runtime = tokio::runtime::Runtime::new()
-                .map_err(|e| format!("Failed to create Tokio runtime: {}", e))?;
-            
-            let result = runtime.block_on(async {
-                use bollard::Docker;
-                use tokio::time::{timeout, Duration as TokioDuration};
-                
-                // Connect to Docker with timeout
-                let docker_result = timeout(
-                    TokioDuration::from_secs(5), // 5 second timeout for connection
-                    Docker::connect_with_local_defaults()
-                ).await;
-                
-                let docker = match docker_result {
-                    Ok(Ok(docker)) => docker,
-                    Ok(Err(e)) => return Err(format!("Failed to connect to Docker: {}", e).into()),
-                    Err(_) => return Err("Docker connection timeout".into()),
-                };
-                
-                // Stop the container with timeout (ignore errors for non-existent containers)
-                let stop_result = timeout(
-                    TokioDuration::from_secs(10), // 10 second timeout for stop
-                    docker.stop_container(container_id, None::<bollard::query_parameters::StopContainerOptions>)
-                ).await;
-                
-                match stop_result {
-                    Ok(Ok(())) => info!("🛑 Container {} stopped successfully", container_id),
-                    Ok(Err(e)) => {
-                        let error_msg = e.to_string();
-                        if error_msg.contains("No such container") || error_msg.contains("not found") {
-                            info!("ℹ️ Container {} already removed or doesn't exist", container_id);
-                        } else {
-                            warn!("Failed to stop container {}: {}", container_id, e);
-                            // Don't return error for cleanup operations - just log and continue
-                        }
-                    },
-                    Err(_) => {
-                        warn!("Container stop timeout for {}", container_id);
-                        // Don't return error for cleanup operations - just log and continue
-                    },
-                }
-                
-                // Remove the container with timeout (ignore errors for non-existent containers)
-                let remove_result = timeout(
-                    TokioDuration::from_secs(10), // 10 second timeout for remove
-                    docker.remove_container(container_id, None::<bollard::query_parameters::RemoveContainerOptions>)
-                ).await;
-                
-                match remove_result {
-                    Ok(Ok(())) => info!("🗑️ Container {} removed successfully", container_id),
-                    Ok(Err(e)) => {
-                        let error_msg = e.to_string();
-                        if error_msg.contains("No such container") || error_msg.contains("not found") {
-                            info!("ℹ️ Container {} already removed or doesn't exist", container_id);
-                        } else {
-                            warn!("Failed to remove container {}: {}", container_id, e);
-                            // Don't return error for cleanup operations - just log and continue
-                        }
-                    },
-                    Err(_) => {
-                        warn!("Container remove timeout for {}", container_id);
-                        // Don't return error for cleanup operations - just log and continue
-                    },
-                }
-                
-                Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-            });
-            
-            match result {
-                Ok(()) => {
-                    info!("🛑 Stopped and removed Docker container {}", container_id);
-                    Ok(())
-                }
-                Err(e) => Err(e),
-            }
-        }
+        // Real Docker API implementation - spawn Tokio runtime for async operations
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| format!("Failed to create Tokio runtime: {}", e))?;
         
-        #[cfg(not(feature = "docker"))]
-        {
-            // Mock implementation
-            info!("🛑 Stopping mock container {}", container_id);
-            std::thread::sleep(Duration::from_millis(50));
-            info!("✅ Mock container {} stopped successfully", container_id);
-            Ok(())
+        let result = runtime.block_on(async {
+            use bollard::Docker;
+            use tokio::time::{timeout, Duration as TokioDuration};
+            
+            // Connect to Docker (synchronous in bollard 0.19)
+            let docker = Docker::connect_with_local_defaults()
+                .map_err(|e| format!("Failed to connect to Docker: {}", e))?;
+            
+            // Stop the container with timeout (ignore errors for non-existent containers)
+            let stop_result = timeout(
+                TokioDuration::from_secs(10), // 10 second timeout for stop
+                docker.stop_container(container_id, None::<bollard::query_parameters::StopContainerOptions>)
+            ).await;
+            
+            match stop_result {
+                Ok(Ok(())) => info!("🛑 Container {} stopped successfully", container_id),
+                Ok(Err(e)) => {
+                    let error_msg = e.to_string();
+                    if error_msg.contains("No such container") || error_msg.contains("not found") {
+                        info!("ℹ️ Container {} already removed or doesn't exist", container_id);
+                    } else {
+                        warn!("Failed to stop container {}: {}", container_id, e);
+                        // Don't return error for cleanup operations - just log and continue
+                    }
+                },
+                Err(_) => {
+                    warn!("Container stop timeout for {}", container_id);
+                    // Don't return error for cleanup operations - just log and continue
+                },
+            }
+            
+            // Remove the container with timeout (ignore errors for non-existent containers)
+            let remove_result = timeout(
+                TokioDuration::from_secs(10), // 10 second timeout for remove
+                docker.remove_container(container_id, None::<bollard::query_parameters::RemoveContainerOptions>)
+            ).await;
+            
+            match remove_result {
+                Ok(Ok(())) => info!("🗑️ Container {} removed successfully", container_id),
+                Ok(Err(e)) => {
+                    let error_msg = e.to_string();
+                    if error_msg.contains("No such container") || error_msg.contains("not found") {
+                        info!("ℹ️ Container {} already removed or doesn't exist", container_id);
+                    } else {
+                        warn!("Failed to remove container {}: {}", container_id, e);
+                        // Don't return error for cleanup operations - just log and continue
+                    }
+                },
+                Err(_) => {
+                    warn!("Container remove timeout for {}", container_id);
+                    // Don't return error for cleanup operations - just log and continue
+                },
+            }
+            
+            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+        });
+        
+        match result {
+            Ok(()) => {
+                info!("🛑 Stopped and removed Docker container {}", container_id);
+                Ok(())
+            }
+            Err(e) => Err(e),
         }
     }
     
-    #[cfg(feature = "docker")]
     async fn wait_for_ready_async(&self, docker: &bollard::Docker, container_id: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         use tokio::time::{sleep, Duration as TokioDuration};
         

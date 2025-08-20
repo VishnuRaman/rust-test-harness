@@ -16,19 +16,8 @@ atty = "0.2"
 uuid = { version = "1.0", features = ["v4"] }
 rayon = "1.8"
 chrono = "0.4"
-
-[features]
-default = []
-docker = ["bollard", "tokio"]
-
-[dependencies.bollard]
-version = "0.19"
-optional = true
-
-[dependencies.tokio]
-version = "1.0"
-optional = true
-features = ["full"]
+bollard = "0.19"
+tokio = { version = "1.0", features = ["full"] }
 
 # Core examples demonstrating the main usage patterns
 [[example]]
@@ -75,3 +64,8 @@ path = "examples/auto_port_demo.rs"
 [[example]]
 name = "container_port_access"
 path = "examples/container_port_access.rs"
+
+# User-specified ports example
+[[example]]
+name = "user_specified_ports"
+path = "examples/user_specified_ports.rs"

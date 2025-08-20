@@ -1,6 +1,11 @@
 # Rust Test Harness
 
-A modern, feature-rich testing framework for Rust with Docker integration, hooks, and parallel execution.
+A modern, feature-rich testing framework for Rust with real Docker container management, hooks, and parallel execution.
+
+## Requirements
+
+- **Docker**: This framework requires Docker to be installed and running on your system
+- **Rust**: Rust 1.70+ with Cargo
 
 ## Features
 
@@ -299,18 +304,52 @@ let container = ContainerConfig::new("redis:alpine")
 - `.start()` - Start container and return `ContainerInfo`
 - `.stop(container_id)` - Stop container by ID
 
-**Auto-Port Functionality:**
-The framework automatically finds available ports on your system, eliminating port conflicts:
+**Automatic Cleanup:**
+By default, all containers are automatically stopped and removed when tests complete. This ensures a clean environment for each test run.
 
-```rust
-let container = ContainerConfig::new("nginx:alpine")
-    .auto_port(80)        // Automatically assign available host port for container port 80
-    .auto_port(443);      // Automatically assign available host port for container port 443
+**Port Configuration Options:**
 
-let container_info = container.start()?;
-println!("Container running on: {}", container_info.ports_summary());
-println!("Web accessible at: {}", container_info.primary_url().unwrap());
-```
+1. **Auto-Port Assignment** (Recommended):
+   The framework automatically finds available ports on your system, eliminating port conflicts:
+
+   ```rust
+   let container = ContainerConfig::new("nginx:alpine")
+       .auto_port(80)        // Automatically assign available host port for container port 80
+       .auto_port(443);      // Automatically assign available host port for container port 443
+
+   let container_info = container.start()?;
+   println!("Container running on: {}", container_info.ports_summary());
+   println!("Web accessible at: {}", container_info.primary_url().unwrap());
+   ```
+
+2. **User-Specified Ports**:
+   You can also specify exact port mappings when you need specific ports:
+
+   ```rust
+   let container = ContainerConfig::new("postgres:13-alpine")
+       .port(5432, 5432)     // Map host port 5432 to container port 5432
+       .port(8080, 80);      // Map host port 8080 to container port 80
+
+   let container_info = container.start()?;
+   // PostgreSQL will be accessible on localhost:5432
+   // HTTP service will be accessible on localhost:8080
+   ```
+
+3. **Mixed Configuration**:
+   Combine both approaches for maximum flexibility:
+
+   ```rust
+   let container = ContainerConfig::new("httpd:alpine")
+       .port(8080, 80)       // Fixed mapping for main service
+       .auto_port(443)       // Auto-assign for HTTPS
+       .auto_port(9090);     // Auto-assign for metrics
+
+   let container_info = container.start()?;
+   println!("HTTP: localhost:8080");
+   if let Some(https_port) = container_info.host_port_for(443) {
+       println!("HTTPS: localhost:{}", https_port);
+   }
+   ```
 
 **ContainerInfo Object:**
 When you start a container, you get a `ContainerInfo` object with:
@@ -490,8 +529,11 @@ cargo run --example auto_port_demo
 # Learn how to access container ports and URLs
 cargo run --example container_port_access
 
-# See real Docker integration (requires Docker)
-cargo run --example container_port_access --features docker
+# Container port and URL access
+cargo run --example container_port_access
+
+# User-specified port mappings
+cargo run --example user_specified_ports
 ```
 
 ## Container Management Patterns
