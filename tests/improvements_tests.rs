@@ -103,7 +103,7 @@ fn test_parallel_execution() {
 #[test]
 fn test_container_config_docker_integration() {
     // Use a lightweight, fast-pulling image for testing
-    let container = ContainerConfig::new("alpine:latest")
+    let container = ContainerConfig::new("nginx:alpine")
         .ready_timeout(Duration::from_secs(10));
     
     // Test container lifecycle (real Docker API)
@@ -220,14 +220,17 @@ fn test_data_sharing_between_hooks_and_tests() {
 #[test]
 fn test_multiple_container_configurations() {
     let containers = vec![
-        ContainerConfig::new("redis:alpine").port(6379, 6379),
-        ContainerConfig::new("postgres:13").port(5432, 5432),
-        ContainerConfig::new("mongo:5.0").port(27017, 27017),
+        ContainerConfig::new("redis:alpine").auto_port(6379),
+        ContainerConfig::new("postgres:13-alpine").auto_port(5432),
+        ContainerConfig::new("nginx:alpine").auto_port(80),
     ];
     
     for (i, container) in containers.iter().enumerate() {
         let container_info = container.start().unwrap();
-        assert!(container_info.container_id.starts_with("mock_"));
+        
+        // Real Docker container ID should be a long hex string
+        assert!(container_info.container_id.len() >= 12, "Docker container ID should be at least 12 characters");
+        assert!(container_info.container_id.chars().all(|c| c.is_ascii_hexdigit()), "Docker container ID should be hexadecimal");
         
         let stop_result = container.stop(&container_info.container_id);
         assert!(stop_result.is_ok());
@@ -235,8 +238,8 @@ fn test_multiple_container_configurations() {
         // Verify each container has the expected configuration
         match i {
             0 => assert_eq!(container.image, "redis:alpine"),
-            1 => assert_eq!(container.image, "postgres:13"),
-            2 => assert_eq!(container.image, "mongo:5.0"),
+            1 => assert_eq!(container.image, "postgres:13-alpine"),
+            2 => assert_eq!(container.image, "nginx:alpine"),
             _ => unreachable!(),
         }
     }
