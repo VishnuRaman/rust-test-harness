@@ -219,7 +219,7 @@ mod data_tests {
     });
     
     // Test with custom name
-    test_case_named!("test_complex_data_workflow", |_ctx| {
+    test_case_named!(test_complex_data_workflow, |_ctx| {
         setup_hooks();
         
         let mut db = Database::new();

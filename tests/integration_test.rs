@@ -1,4 +1,4 @@
-use rust_test_harness::{test, run_tests, TestConfig, DockerRunOptions};
+use rust_test_harness::{test, run_tests, TestConfig, TimeoutConfig};
 use std::time::Duration;
 
 #[test]
@@ -63,6 +63,7 @@ fn test_integration_with_config() {
         color: Some(false),
         html_report: None,
         skip_hooks: None,
+        timeout_config: TimeoutConfig::default(),
     };
     
     test("config_test_1", |_| Ok(()));
@@ -112,28 +113,7 @@ fn test_integration_concurrent_registration() {
     assert_eq!(result, 0);
 }
 
-#[test]
-fn test_integration_docker_options() {
-    // Test Docker options integration
-    
-    let opts = DockerRunOptions::new("alpine:latest")
-        .env("TEST_ENV", "integration")
-        .port(8080, 80)
-        .name("integration-test-container");
-    
-    // Verify options are set correctly
-    assert_eq!(opts.image, "alpine:latest");
-    assert_eq!(opts.env, vec![("TEST_ENV".to_string(), "integration".to_string())]);
-    assert_eq!(opts.ports, vec![(8080, 80)]);
-    assert_eq!(opts.name, Some("integration-test-container".to_string()));
-    
-    // Test that we can create multiple options
-    let opts2 = DockerRunOptions::new("nginx:alpine")
-        .env("NGINX_HOST", "localhost");
-    
-    assert_eq!(opts2.image, "nginx:alpine");
-    assert_eq!(opts2.env, vec![("NGINX_HOST".to_string(), "localhost".to_string())]);
-}
+
 
 #[test]
 fn test_integration_large_test_suite() {

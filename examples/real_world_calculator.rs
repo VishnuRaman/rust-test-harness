@@ -257,7 +257,7 @@ mod memory_tests {
         Ok(())
     });
     
-    test_case_named!("test_calculator_state_persistence", |_ctx| {
+    test_case_named!(test_calculator_state_persistence, |_ctx| {
         let mut calc = Calculator::new();
         
         // Perform multiple operations

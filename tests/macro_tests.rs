@@ -1,6 +1,5 @@
 use rust_test_harness::{
-    test_case, test_case_named, test_case_docker, 
-    DockerRunOptions
+    test_case, test_case_named
 };
 
 // Test struct for demonstrating functionality
@@ -87,7 +86,7 @@ fn test_test_case_macro_error_handling() {
 fn test_test_case_named_macro() {
     // Test test_case_named! macro functionality
     
-    test_case_named!("test_named_calculator", |_ctx| {
+    test_case_named!(test_named_calculator, |_ctx| {
         let calc = TestCalculator::new();
         assert_eq!(calc.get_value(), 0);
         Ok(())
@@ -96,56 +95,9 @@ fn test_test_case_named_macro() {
     assert!(true, "test_case_named! macro compiled successfully");
 }
 
-#[test]
-fn test_test_case_docker_macro() {
-    // Test test_case_docker! macro functionality
-    
-    test_case_docker!(test_docker_calculator, 
-        DockerRunOptions::new("alpine:latest")
-            .env("TEST_ENV", "docker_test")
-            .port(8080, 80), 
-        |_ctx| {
-            // Test that we can use the context
-            let mut calc = TestCalculator::new();
-            calc.add(42);
-            assert_eq!(calc.get_value(), 42);
-            
-            // Test that we can access environment variables
-            // (In a real Docker container, this would work)
-            Ok(())
-        }
-    );
-    
-    assert!(true, "test_case_docker! macro compiled successfully");
-}
 
-#[test]
-fn test_test_case_docker_with_complex_options() {
-    // Test test_case_docker! macro with complex Docker options
-    
-    test_case_docker!(test_complex_docker, 
-        DockerRunOptions::new("nginx:alpine")
-            .env("NGINX_HOST", "localhost")
-            .env("NGINX_PORT", "80")
-            .port(8080, 80)
-            .port(8443, 443)
-            .arg("--name")
-            .arg("test-nginx")
-            .name("test-nginx-container")
-            .label("test", "true")
-            .label("framework", "rust-test-harness"), 
-        |_ctx| {
-            // Test that the context is available
-            let mut calc = TestCalculator::new();
-            calc.add(100);
-            assert_eq!(calc.get_value(), 100);
-            
-            Ok(())
-        }
-    );
-    
-    assert!(true, "test_case_docker! macro with complex options compiled successfully");
-}
+
+
 
 #[test]
 fn test_macro_context_usage() {
@@ -365,15 +317,12 @@ fn test_macro_documentation_examples() {
         Ok(())
     });
     
-    // Example 3: Docker integration
-    test_case_docker!(test_doc_example_3, 
-        DockerRunOptions::new("alpine:latest"), 
-        |_ctx| {
-            let calc = TestCalculator::new();
-            assert_eq!(calc.get_value(), 0);
-            Ok(())
-        }
-    );
+    // Example 3: Docker integration (using Container hooks instead)
+    test_case!(test_doc_example_3, |_ctx| {
+        let calc = TestCalculator::new();
+        assert_eq!(calc.get_value(), 0);
+        Ok(())
+    });
     
     assert!(true, "Documentation examples compiled successfully");
 } 

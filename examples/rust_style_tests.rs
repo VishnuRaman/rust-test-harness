@@ -7,9 +7,9 @@
 //! 4. Leverage the framework's enhanced features (hooks, Docker, etc.)
 
 use rust_test_harness::{
-    test_case, test_case_named, test_case_docker, 
+    test_case, test_case_named, 
     before_all, before_each, after_each, after_all,
-    DockerRunOptions, TestContext
+    TestContext
 };
 use std::time::Duration;
 
@@ -78,7 +78,7 @@ mod tests {
     });
     
     // Test with custom name using test_case_named! macro
-    test_case_named!("test_calculator_addition", |_ctx| {
+    test_case_named!(test_calculator_addition, |_ctx| {
         // Setup hooks for this test
         setup_hooks();
         
@@ -89,8 +89,8 @@ mod tests {
         Ok(())
     });
     
-    // Test with Docker support using test_case_docker! macro
-    test_case_docker!(test_with_docker, DockerRunOptions::new("alpine:latest"), |ctx| {
+    // Test with Docker support using Container hooks (recommended approach)
+    test_case!(test_with_docker, |ctx| {
         // Setup hooks for this test
         setup_hooks();
         
@@ -205,7 +205,7 @@ mod integration_tests {
     });
     
     // Test with custom name
-    test_case_named!("test_calculator_workflow", |_ctx| {
+    test_case_named!(test_calculator_workflow, |_ctx| {
         // Setup hooks for this test
         setup_hooks();
         

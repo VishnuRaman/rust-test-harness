@@ -1,5 +1,5 @@
 use rust_test_harness::{
-    test, run_tests_with_config, TestConfig, TestStatus, TestError
+    test, run_tests_with_config, TestConfig
 };
 use std::time::Duration;
 use std::fs;
@@ -9,8 +9,12 @@ use std::path::Path;
 fn test_html_report_generation_basic() {
     // Test basic HTML report generation with passing tests
     
+    println!("🔍 Starting HTML report generation test...");
+    
     test("basic_passing_test", |_| Ok(()));
     test("another_passing_test", |_| Ok(()));
+    
+    println!("📝 Registered 2 tests, now running with config...");
     
     let config = TestConfig {
         html_report: Some("test_basic_report.html".to_string()),
@@ -18,21 +22,28 @@ fn test_html_report_generation_basic() {
         ..Default::default()
     };
     
+    println!("⚙️  Config created, calling run_tests_with_config...");
+    
     let result = run_tests_with_config(config);
+    
+    println!("📊 run_tests_with_config returned: {}", result);
+    
     assert_eq!(result, 0);
     
-    // Verify HTML file was created
-    assert!(Path::new("test_basic_report.html").exists(), "HTML report file should exist");
+    // Verify HTML file was created in target/test-reports/
+    let target_dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
+    let html_path = format!("{}/test-reports/test_basic_report.html", target_dir);
+    assert!(Path::new(&html_path).exists(), "HTML report file should exist at {}", html_path);
     
     // Verify HTML content
-    let html_content = fs::read_to_string("test_basic_report.html").unwrap();
+    let html_content = fs::read_to_string(&html_path).unwrap();
     assert!(html_content.contains("🧪 Test Execution Report"), "HTML should contain report title");
     assert!(html_content.contains("basic_passing_test"), "HTML should contain test names");
     assert!(html_content.contains("PASSED"), "HTML should contain passed status");
     assert!(html_content.contains("2"), "HTML should show correct test count");
     
     // Cleanup
-    let _ = fs::remove_file("test_basic_report.html");
+    let _ = fs::remove_file(&html_path);
 }
 
 #[test]
@@ -52,11 +63,13 @@ fn test_html_report_generation_with_failures() {
     let result = run_tests_with_config(config);
     assert_eq!(result, 1); // Should fail due to one failing test
     
-    // Verify HTML file was created
-    assert!(Path::new("test_mixed_report.html").exists(), "HTML report file should exist");
+    // Verify HTML file was created in target/test-reports/
+    let target_dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
+    let html_path = format!("{}/test-reports/test_mixed_report.html", target_dir);
+    assert!(Path::new(&html_path).exists(), "HTML report file should exist at {}", html_path);
     
     // Verify HTML content
-    let html_content = fs::read_to_string("test_mixed_report.html").unwrap();
+    let html_content = fs::read_to_string(&html_path).unwrap();
     assert!(html_content.contains("🧪 Test Execution Report"), "HTML should contain report title");
     assert!(html_content.contains("passing_test"), "HTML should contain passing test name");
     assert!(html_content.contains("failing_test"), "HTML should contain failing test name");
@@ -66,7 +79,7 @@ fn test_html_report_generation_with_failures() {
     assert!(html_content.contains("3"), "HTML should show correct test count");
     
     // Cleanup
-    let _ = fs::remove_file("test_mixed_report.html");
+    let _ = fs::remove_file(&html_path);
 }
 
 #[test]
@@ -85,11 +98,13 @@ fn test_html_report_generation_with_tags() {
     let result = run_tests_with_config(config);
     assert_eq!(result, 0);
     
-    // Verify HTML file was created
-    assert!(Path::new("test_tagged_report.html").exists(), "HTML report file should contain tags");
+    // Verify HTML file was created in target/test-reports/
+    let target_dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
+    let html_path = format!("{}/test-reports/test_tagged_report.html", target_dir);
+    assert!(Path::new(&html_path).exists(), "HTML report file should contain tags at {}", html_path);
     
     // Cleanup
-    let _ = fs::remove_file("test_tagged_report.html");
+    let _ = fs::remove_file(&html_path);
 }
 
 #[test]
@@ -107,11 +122,13 @@ fn test_html_report_generation_with_docker() {
     let result = run_tests_with_config(config);
     assert_eq!(result, 0);
     
-    // Verify HTML file was created
-    assert!(Path::new("test_docker_report.html").exists(), "HTML report file should exist");
+    // Verify HTML file was created in target/test-reports/
+    let target_dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
+    let html_path = format!("{}/test-reports/test_docker_report.html", target_dir);
+    assert!(Path::new(&html_path).exists(), "HTML report file should exist at {}", html_path);
     
     // Cleanup
-    let _ = fs::remove_file("test_docker_report.html");
+    let _ = fs::remove_file(&html_path);
 }
 
 #[test]
@@ -129,11 +146,13 @@ fn test_html_report_generation_with_timeouts() {
     let result = run_tests_with_config(config);
     assert_eq!(result, 0);
     
-    // Verify HTML file was created
-    assert!(Path::new("test_timeout_report.html").exists(), "HTML report file should exist");
+    // Verify HTML file was created in target/test-reports/
+    let target_dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
+    let html_path = format!("{}/test-reports/test_timeout_report.html", target_dir);
+    assert!(Path::new(&html_path).exists(), "HTML report file should exist at {}", html_path);
     
     // Cleanup
-    let _ = fs::remove_file("test_timeout_report.html");
+    let _ = fs::remove_file(&html_path);
 }
 
 #[test]
@@ -154,17 +173,19 @@ fn test_html_report_generation_large_suite() {
     let result = run_tests_with_config(config);
     assert_eq!(result, 0);
     
-    // Verify HTML file was created
-    assert!(Path::new("test_large_suite_report.html").exists(), "HTML report file should exist");
+    // Verify HTML file was created in target/test-reports/
+    let target_dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
+    let html_path = format!("{}/test-reports/test_large_suite_report.html", target_dir);
+    assert!(Path::new(&html_path).exists(), "HTML report file should exist at {}", html_path);
     
     // Verify HTML content for large suite
-    let html_content = fs::read_to_string("test_large_suite_report.html").unwrap();
+    let html_content = fs::read_to_string(&html_path).unwrap();
     assert!(html_content.contains("50"), "HTML should show correct test count");
     assert!(html_content.contains("large_suite_test_0"), "HTML should contain first test name");
     assert!(html_content.contains("large_suite_test_49"), "HTML should contain last test name");
     
     // Cleanup
-    let _ = fs::remove_file("test_large_suite_report.html");
+    let _ = fs::remove_file(&html_path);
 }
 
 #[test]
@@ -191,18 +212,20 @@ fn test_html_report_generation_with_errors() {
     let result = run_tests_with_config(config);
     assert_eq!(result, 1); // Should fail due to errors
     
-    // Verify HTML file was created
-    assert!(Path::new("test_errors_report.html").exists(), "HTML report file should exist");
+    // Verify HTML file was created in target/test-reports/
+    let target_dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
+    let html_path = format!("{}/test-reports/test_errors_report.html", target_dir);
+    assert!(Path::new(&html_path).exists(), "HTML report file should exist at {}", html_path);
     
     // Verify HTML content contains error information
-    let html_content = fs::read_to_string("test_errors_report.html").unwrap();
+    let html_content = fs::read_to_string(&html_path).unwrap();
     assert!(html_content.contains("panic_test"), "HTML should contain panic test name");
     assert!(html_content.contains("error_test"), "HTML should contain error test name");
     assert!(html_content.contains("intentional panic"), "HTML should contain panic message");
     assert!(html_content.contains("intentional error"), "HTML should contain error message");
     
     // Cleanup
-    let _ = fs::remove_file("test_errors_report.html");
+    let _ = fs::remove_file(&html_path);
 }
 
 #[test]
@@ -223,11 +246,13 @@ fn test_html_report_generation_with_filters() {
     let result = run_tests_with_config(config);
     assert_eq!(result, 0);
     
-    // Verify HTML file was created
-    assert!(Path::new("test_filtered_report.html").exists(), "HTML report file should exist");
+    // Verify HTML file was created in target/test-reports/
+    let target_dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
+    let html_path = format!("{}/test-reports/test_filtered_report.html", target_dir);
+    assert!(Path::new(&html_path).exists(), "HTML report file should exist at {}", html_path);
     
     // Verify HTML content shows filtered results
-    let html_content = fs::read_to_string("test_filtered_report.html").unwrap();
+    let html_content = fs::read_to_string(&html_path).unwrap();
     assert!(html_content.contains("filtered_test_1"), "HTML should contain first filtered test");
     assert!(html_content.contains("filtered_test_2"), "HTML should contain second filtered test");
     assert!(html_content.contains("unfiltered_test"), "HTML should contain unfiltered test");
@@ -237,7 +262,7 @@ fn test_html_report_generation_with_filters() {
     // The filter is applied at test execution time, not at report generation time
     
     // Cleanup
-    let _ = fs::remove_file("test_filtered_report.html");
+    let _ = fs::remove_file(&html_path);
 }
 
 #[test]
@@ -262,17 +287,19 @@ fn test_html_report_generation_with_parallel_execution() {
     let result = run_tests_with_config(config);
     assert_eq!(result, 0);
     
-    // Verify HTML file was created
-    assert!(Path::new("test_parallel_report.html").exists(), "HTML report file should exist");
+    // Verify HTML file was created in target/test-reports/
+    let target_dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
+    let html_path = format!("{}/test-reports/test_parallel_report.html", target_dir);
+    assert!(Path::new(&html_path).exists(), "HTML report file should exist at {}", html_path);
     
     // Verify HTML content shows parallel execution results
-    let html_content = fs::read_to_string("test_parallel_report.html").unwrap();
+    let html_content = fs::read_to_string(&html_path).unwrap();
     assert!(html_content.contains("20"), "HTML should show correct test count");
     assert!(html_content.contains("parallel_test_0"), "HTML should contain first parallel test");
     assert!(html_content.contains("parallel_test_19"), "HTML should contain last parallel test");
     
     // Cleanup
-    let _ = fs::remove_file("test_parallel_report.html");
+    let _ = fs::remove_file(&html_path);
 }
 
 #[test]
@@ -293,15 +320,17 @@ fn test_html_report_generation_with_shuffled_tests() {
     let result = run_tests_with_config(config);
     assert_eq!(result, 0);
     
-    // Verify HTML file was created
-    assert!(Path::new("test_shuffled_report.html").exists(), "HTML report file should exist");
+    // Verify HTML file was created in target/test-reports/
+    let target_dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
+    let html_path = format!("{}/test-reports/test_shuffled_report.html", target_dir);
+    assert!(Path::new(&html_path).exists(), "HTML report file should exist at {}", html_path);
     
     // Verify HTML content shows shuffled results
-    let html_content = fs::read_to_string("test_shuffled_report.html").unwrap();
+    let html_content = fs::read_to_string(&html_path).unwrap();
     assert!(html_content.contains("10"), "HTML should show correct test count");
     
     // Cleanup
-    let _ = fs::remove_file("test_shuffled_report.html");
+    let _ = fs::remove_file(&html_path);
 }
 
 #[test]
@@ -319,11 +348,13 @@ fn test_html_report_generation_with_environment_variable() {
     let result = run_tests_with_config(config);
     assert_eq!(result, 0);
     
-    // Verify HTML file was created
-    assert!(Path::new("test_env_report.html").exists(), "HTML report file should exist");
+    // Verify HTML file was created in target/test-reports/
+    let target_dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
+    let html_path = format!("{}/test-reports/test_env_report.html", target_dir);
+    assert!(Path::new(&html_path).exists(), "HTML report file should exist at {}", html_path);
     
     // Cleanup
-    let _ = fs::remove_file("test_env_report.html");
+    let _ = fs::remove_file(&html_path);
     std::env::remove_var("TEST_HTML_REPORT");
 }
 
@@ -381,11 +412,13 @@ fn test_html_report_content_structure() {
     let result = run_tests_with_config(config);
     assert_eq!(result, 0);
     
-    // Verify HTML file was created
-    assert!(Path::new("test_structure_report.html").exists(), "HTML report file should exist");
+    // Verify HTML file was created in target/test-reports/
+    let target_dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
+    let html_path = format!("{}/test-reports/test_structure_report.html", target_dir);
+    assert!(Path::new(&html_path).exists(), "HTML report file should exist at {}", html_path);
     
     // Verify HTML structure
-    let html_content = fs::read_to_string("test_structure_report.html").unwrap();
+    let html_content = fs::read_to_string(&html_path).unwrap();
     
     // Check HTML structure elements
     assert!(html_content.contains("<!DOCTYPE html>"), "HTML should have proper DOCTYPE");
@@ -406,7 +439,7 @@ fn test_html_report_content_structure() {
     assert!(html_content.contains("Test Results"), "HTML should have test results section");
     
     // Cleanup
-    let _ = fs::remove_file("test_structure_report.html");
+    let _ = fs::remove_file(&html_path);
 }
 
 #[test]
@@ -424,11 +457,13 @@ fn test_html_report_expandable_functionality() {
     let result = run_tests_with_config(config);
     assert_eq!(result, 0);
     
-    // Verify HTML file was created
-    assert!(Path::new("test_expandable_report.html").exists(), "HTML report file should exist");
+    // Verify HTML file was created in target/test-reports/
+    let target_dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
+    let html_path = format!("{}/test-reports/test_expandable_report.html", target_dir);
+    assert!(Path::new(&html_path).exists(), "HTML report file should exist at {}", html_path);
     
     // Verify expandable functionality
-    let html_content = fs::read_to_string("test_expandable_report.html").unwrap();
+    let html_content = fs::read_to_string(&html_path).unwrap();
     
     // Check for expandable elements
     assert!(html_content.contains("test-expandable"), "HTML should have expandable CSS class");
@@ -451,7 +486,7 @@ fn test_html_report_expandable_functionality() {
     assert!(html_content.contains("metadata-grid"), "HTML should have metadata grid CSS class");
     
     // Cleanup
-    let _ = fs::remove_file("test_expandable_report.html");
+    let _ = fs::remove_file(&html_path);
 }
 
 #[test]
@@ -471,11 +506,13 @@ fn test_html_report_search_functionality() {
     let result = run_tests_with_config(config);
     assert_eq!(result, 0);
     
-    // Verify HTML file was created
-    assert!(Path::new("test_searchable_report.html").exists(), "HTML report file should exist");
+    // Verify HTML file was created in target/test-reports/
+    let target_dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
+    let html_path = format!("{}/test-reports/test_searchable_report.html", target_dir);
+    assert!(Path::new(&html_path).exists(), "HTML report file should exist at {}", html_path);
     
     // Verify search functionality
-    let html_content = fs::read_to_string("test_searchable_report.html").unwrap();
+    let html_content = fs::read_to_string(&html_path).unwrap();
     
     // Check for search implementation
     assert!(html_content.contains("getElementById('testSearch')"), "HTML should have search element reference");
@@ -489,7 +526,7 @@ fn test_html_report_search_functionality() {
     assert!(html_content.contains("data-test-tags"), "HTML should have test tags data attribute");
     
     // Cleanup
-    let _ = fs::remove_file("test_searchable_report.html");
+    let _ = fs::remove_file(&html_path);
 }
 
 #[test]
@@ -507,11 +544,13 @@ fn test_html_report_keyboard_shortcuts() {
     let result = run_tests_with_config(config);
     assert_eq!(result, 0);
     
-    // Verify HTML file was created
-    assert!(Path::new("test_keyboard_report.html").exists(), "HTML report file should exist");
+    // Verify HTML file was created in target/test-reports/
+    let target_dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
+    let html_path = format!("{}/test-reports/test_keyboard_report.html", target_dir);
+    assert!(Path::new(&html_path).exists(), "HTML report file should exist at {}", html_path);
     
     // Verify keyboard shortcuts
-    let html_content = fs::read_to_string("test_keyboard_report.html").unwrap();
+    let html_content = fs::read_to_string(&html_path).unwrap();
     
     // Check for keyboard shortcut implementation
     assert!(html_content.contains("addEventListener('keydown'"), "HTML should have keyboard event listener");
@@ -524,7 +563,7 @@ fn test_html_report_keyboard_shortcuts() {
     assert!(html_content.contains("preventDefault()"), "HTML should prevent default browser behavior");
     
     // Cleanup
-    let _ = fs::remove_file("test_keyboard_report.html");
+    let _ = fs::remove_file(&html_path);
 }
 
 #[test]
@@ -543,11 +582,13 @@ fn test_html_report_auto_expand_failed_tests() {
     let result = run_tests_with_config(config);
     assert_eq!(result, 1); // Should fail due to one failing test
     
-    // Verify HTML file was created
-    assert!(Path::new("test_auto_expand_report.html").exists(), "HTML report file should exist");
+    // Verify HTML file was created in target/test-reports/
+    let target_dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
+    let html_path = format!("{}/test-reports/test_auto_expand_report.html", target_dir);
+    assert!(Path::new(&html_path).exists(), "HTML report file should exist at {}", html_path);
     
     // Verify auto-expand functionality
-    let html_content = fs::read_to_string("test_auto_expand_report.html").unwrap();
+    let html_content = fs::read_to_string(&html_path).unwrap();
     
     // Check for auto-expand implementation
     assert!(html_content.contains("addEventListener('DOMContentLoaded'"), "HTML should have DOM ready listener");
@@ -555,7 +596,7 @@ fn test_html_report_auto_expand_failed_tests() {
     assert!(html_content.contains("classList.add('expanded')"), "HTML should auto-expand failed tests");
     
     // Cleanup
-    let _ = fs::remove_file("test_auto_expand_report.html");
+    let _ = fs::remove_file(&html_path);
 }
 
 #[test]
@@ -580,8 +621,10 @@ fn test_html_report_generation_performance() {
     
     assert_eq!(result, 0);
     
-    // Verify HTML file was created
-    assert!(Path::new("test_perf_report.html").exists(), "HTML report file should exist");
+    // Verify HTML file was created in target/test-reports/
+    let target_dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
+    let html_path = format!("{}/test-reports/test_perf_report.html", target_dir);
+    assert!(Path::new(&html_path).exists(), "HTML report file should exist at {}", html_path);
     
     // Performance assertion: 100 tests should complete and generate HTML in reasonable time
     assert!(
@@ -591,5 +634,5 @@ fn test_html_report_generation_performance() {
     );
     
     // Cleanup
-    let _ = fs::remove_file("test_perf_report.html");
+    let _ = fs::remove_file(&html_path);
 } 

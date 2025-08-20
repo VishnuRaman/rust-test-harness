@@ -18,7 +18,6 @@ pub fn multiply(a: i32, b: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
     // Test using test_case! macro - works exactly like #[test]
     test_case!(test_add, |_ctx| {
         assert_eq!(add(2, 3), 5);

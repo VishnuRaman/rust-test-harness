@@ -11,7 +11,7 @@
 //! - Test metadata (tags, timeouts, Docker)
 
 use rust_test_harness::{
-    test, run_tests_with_config, TestConfig, DockerRunOptions
+    test, run_tests_with_config, TestConfig
 };
 use std::time::Duration;
 
@@ -210,13 +210,15 @@ fn main() {
     println!("🎉 HTML Reporting Examples Complete!");
     println!("=====================================");
     println!();
-    println!("Generated HTML reports:");
+    println!("Generated HTML reports (stored in target/test-reports/):");
     println!("  📄 basic_report.html - Basic functionality");
     println!("  📄 mixed_results_report.html - Pass/fail/skip results");
     println!("  📄 rich_metadata_report.html - Rich test metadata");
     println!("  📄 large_suite_report.html - Large test suite");
     println!("  📄 env_var_report.html - Environment variable config");
     println!("  📄 performance_report.html - Performance testing");
+    println!();
+    println!("📁 All reports are automatically organized in target/test-reports/");
     println!();
     println!("📖 HTML Report Features:");
     println!("  🔽 Expandable test details - Click any test to expand");
@@ -231,9 +233,11 @@ fn main() {
     println!("  • Click test headers to expand/collapse details");
     println!("  • Failed tests are automatically expanded for visibility");
     println!("  • Reports work great in CI/CD pipelines and team sharing");
+    println!("  • All reports are neatly organized in target/test-reports/");
     println!();
     println!("🔧 Configuration Options:");
     println!("  • Set TEST_HTML_REPORT environment variable");
     println!("  • Use TestConfig.html_report for programmatic control");
     println!("  • Combine with other config options (filtering, concurrency)");
+    println!("  • Reports automatically go to target/test-reports/ for clean organization");
 } 

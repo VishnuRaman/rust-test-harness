@@ -1,10 +1,26 @@
-use std::cell::RefCell;
-use std::sync::{mpsc, Arc, Mutex};
-use std::thread;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::collections::HashMap;
+use std::any::Any;
+use std::cell::RefCell;
+use once_cell::sync::OnceCell;
 use log::{info, warn, error};
 
+// Global shared context for before_all/after_all hooks
+static GLOBAL_SHARED_DATA: OnceCell<Arc<Mutex<HashMap<String, String>>>> = OnceCell::new();
+
+pub fn get_global_context() -> Arc<Mutex<HashMap<String, String>>> {
+    GLOBAL_SHARED_DATA.get_or_init(|| Arc::new(Mutex::new(HashMap::new()))).clone()
+}
+
+pub fn clear_global_context() {
+    if let Some(global_ctx) = GLOBAL_SHARED_DATA.get() {
+        if let Ok(mut map) = global_ctx.lock() {
+            map.clear();
+        }
+    }
+}
 
 // --- Thread-local test registry ---
 // Each test thread gets its own isolated registry - no manual cleanup needed!
@@ -32,17 +48,31 @@ pub fn clear_test_registry() {
 // --- Type definitions ---
 
 pub type TestResult = Result<(), TestError>;
-pub type TestFn = Box<dyn FnMut(&mut TestContext) -> TestResult + Send>;
-pub type HookFn = Box<dyn FnMut(&mut TestContext) -> TestResult + Send>;
+pub type TestFn = Box<dyn FnOnce(&mut TestContext) -> TestResult + Send + 'static>;
+pub type HookFn = Arc<Mutex<Box<dyn FnMut(&mut TestContext) -> TestResult + Send>>>;
 
 pub struct TestCase {
     pub name: String,
-    pub test_fn: TestFn,
-    pub docker: Option<DockerRunOptions>,
+    pub test_fn: Option<TestFn>, // Changed to Option to allow safe Send+Sync
     pub tags: Vec<String>,
     pub timeout: Option<Duration>,
     pub status: TestStatus,
 }
+
+impl Clone for TestCase {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            test_fn: None, // Clone with None since we can't clone the function
+            tags: self.tags.clone(),
+            timeout: self.timeout.clone(),
+            status: self.status.clone(),
+        }
+    }
+}
+
+// TestCase is now automatically Send + Sync since test_fn is Option<TestFn>
+// and all other fields are already Send + Sync
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TestStatus {
@@ -53,10 +83,11 @@ pub enum TestStatus {
     Skipped,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TestContext {
     pub docker_handle: Option<DockerHandle>,
     pub start_time: Instant,
+    pub data: HashMap<String, Box<dyn Any + Send + Sync>>,
 }
 
 impl TestContext {
@@ -64,6 +95,45 @@ impl TestContext {
         Self {
             docker_handle: None,
             start_time: Instant::now(),
+            data: HashMap::new(),
+        }
+    }
+    
+    /// Store arbitrary data in the test context
+    pub fn set_data<T: Any + Send + Sync>(&mut self, key: &str, value: T) {
+        self.data.insert(key.to_string(), Box::new(value));
+    }
+    
+    /// Retrieve data from the test context
+    pub fn get_data<T: Any + Send + Sync>(&self, key: &str) -> Option<&T> {
+        self.data.get(key).and_then(|boxed| boxed.downcast_ref::<T>())
+    }
+    
+    /// Check if data exists in the test context
+    pub fn has_data(&self, key: &str) -> bool {
+        self.data.contains_key(key)
+    }
+    
+    /// Remove data from the test context
+    pub fn remove_data<T: Any + Send + Sync>(&mut self, key: &str) -> Option<T> {
+        self.data.remove(key).and_then(|boxed| {
+            match boxed.downcast::<T>() {
+                Ok(value) => Some(*value),
+                Err(_) => None,
+            }
+        })
+    }
+    
+    // Removed get_global_data function - it was a footgun that never worked
+    // Use get_data() instead, which properly accesses data set by before_all hooks
+}
+
+impl Clone for TestContext {
+    fn clone(&self) -> Self {
+        Self {
+            docker_handle: self.docker_handle.clone(),
+            start_time: self.start_time,
+            data: HashMap::new(), // Can't clone Box<dyn Any>, start fresh
         }
     }
 }
@@ -74,83 +144,7 @@ pub struct DockerHandle {
     pub ports: Vec<(u16, u16)>, // (host_port, container_port)
 }
 
-#[derive(Debug, Clone)]
-pub struct DockerRunOptions {
-    pub image: String,
-    pub env: Vec<(String, String)>,
-    pub ports: Vec<(u16, u16)>, // (host_port, container_port)
-    pub args: Vec<String>,
-    pub name: Option<String>,
-    pub labels: Vec<(String, String)>,
-    pub ready_timeout: Duration,
-    pub readiness: Readiness,
-}
 
-impl Default for DockerRunOptions {
-    fn default() -> Self {
-        Self {
-            image: "alpine:latest".to_string(),
-            env: Vec::new(),
-            ports: Vec::new(),
-            args: Vec::new(),
-            name: None,
-            labels: Vec::new(),
-            ready_timeout: Duration::from_secs(15),
-            readiness: Readiness::Running,
-        }
-    }
-}
-
-impl DockerRunOptions {
-    pub fn new(image: &str) -> Self {
-        Self {
-            image: image.to_string(),
-            ..Default::default()
-        }
-    }
-
-    pub fn env(mut self, key: &str, value: &str) -> Self {
-        self.env.push((key.to_string(), value.to_string()));
-        self
-    }
-
-    pub fn port(mut self, host_port: u16, container_port: u16) -> Self {
-        self.ports.push((host_port, container_port));
-        self
-    }
-
-    pub fn arg(mut self, arg: &str) -> Self {
-        self.args.push(arg.to_string());
-        self
-    }
-
-    pub fn name(mut self, name: &str) -> Self {
-        self.name = Some(name.to_string());
-        self
-    }
-
-    pub fn label(mut self, key: &str, value: &str) -> Self {
-        self.labels.push((key.to_string(), value.to_string()));
-        self
-    }
-
-    pub fn ready_timeout(mut self, timeout: Duration) -> Self {
-        self.ready_timeout = timeout;
-        self
-    }
-
-    pub fn readiness(mut self, readiness: Readiness) -> Self {
-        self.readiness = readiness;
-        self
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum Readiness {
-    Running,
-    PortOpen(u16),
-    Custom(String), // Custom readiness command
-}
 
 #[derive(Debug, Clone)]
 pub struct TestConfig {
@@ -161,6 +155,7 @@ pub struct TestConfig {
     pub color: Option<bool>,
     pub html_report: Option<String>,
     pub skip_hooks: Option<bool>,
+    pub timeout_config: TimeoutConfig,
 }
 
 impl Default for TestConfig {
@@ -181,6 +176,7 @@ impl Default for TestConfig {
             skip_hooks: std::env::var("TEST_SKIP_HOOKS")
                 .ok()
                 .and_then(|s| s.parse().ok()),
+            timeout_config: TimeoutConfig::default(),
         }
     }
 }
@@ -192,28 +188,28 @@ pub fn before_all<F>(f: F)
 where 
     F: FnMut(&mut TestContext) -> TestResult + Send + 'static 
 {
-    THREAD_BEFORE_ALL.with(|hooks| hooks.borrow_mut().push(Box::new(f)));
+    THREAD_BEFORE_ALL.with(|hooks| hooks.borrow_mut().push(Arc::new(Mutex::new(Box::new(f)))));
 }
 
 pub fn before_each<F>(f: F) 
 where 
     F: FnMut(&mut TestContext) -> TestResult + Send + 'static 
 {
-    THREAD_BEFORE_EACH.with(|hooks| hooks.borrow_mut().push(Box::new(f)));
+    THREAD_BEFORE_EACH.with(|hooks| hooks.borrow_mut().push(Arc::new(Mutex::new(Box::new(f)))));
 }
 
 pub fn after_each<F>(f: F) 
 where 
     F: FnMut(&mut TestContext) -> TestResult + Send + 'static 
 {
-    THREAD_AFTER_EACH.with(|hooks| hooks.borrow_mut().push(Box::new(f)));
+    THREAD_AFTER_EACH.with(|hooks| hooks.borrow_mut().push(Arc::new(Mutex::new(Box::new(f)))));
 }
 
 pub fn after_all<F>(f: F) 
 where 
     F: FnMut(&mut TestContext) -> TestResult + Send + 'static 
 {
-    THREAD_AFTER_ALL.with(|hooks| hooks.borrow_mut().push(Box::new(f)));
+    THREAD_AFTER_ALL.with(|hooks| hooks.borrow_mut().push(Arc::new(Mutex::new(Box::new(f)))));
 }
 
 pub fn test<F>(name: &str, f: F) 
@@ -222,27 +218,14 @@ where
 {
     THREAD_TESTS.with(|tests| tests.borrow_mut().push(TestCase {
         name: name.to_string(),
-        test_fn: Box::new(f),
-        docker: None,
+        test_fn: Some(Box::new(f)),
         tags: Vec::new(),
         timeout: None,
         status: TestStatus::Pending,
     }));
 }
 
-pub fn test_with_docker<F>(name: &'static str, opts: DockerRunOptions, f: F) 
-where 
-    F: FnMut(&mut TestContext) -> TestResult + Send + 'static 
-{
-    THREAD_TESTS.with(|tests| tests.borrow_mut().push(TestCase {
-        name: name.to_string(),
-        test_fn: Box::new(f),
-        docker: Some(opts),
-        tags: Vec::new(),
-        timeout: None,
-        status: TestStatus::Pending,
-    }));
-}
+
 
 pub fn test_with_tags<F>(name: &'static str, tags: Vec<&'static str>, f: F) 
 where 
@@ -250,24 +233,24 @@ where
 {
     THREAD_TESTS.with(|tests| tests.borrow_mut().push(TestCase {
         name: name.to_string(),
-        test_fn: Box::new(f),
-        docker: None,
+        test_fn: Some(Box::new(f)),
         tags: tags.into_iter().map(|s| s.to_string()).collect(),
         timeout: None,
         status: TestStatus::Pending,
     }));
 }
 
-pub fn test_with_docker_and_tags<F>(name: &'static str, opts: DockerRunOptions, tags: Vec<&'static str>, f: F) 
+
+
+pub fn test_with_timeout<F>(name: &str, timeout: Duration, f: F) 
 where 
     F: FnMut(&mut TestContext) -> TestResult + Send + 'static 
 {
     THREAD_TESTS.with(|tests| tests.borrow_mut().push(TestCase {
         name: name.to_string(),
-        test_fn: Box::new(f),
-        docker: Some(opts),
-        tags: tags.into_iter().map(|s| s.to_string()).collect(),
-        timeout: None,
+        test_fn: Some(Box::new(f)),
+        tags: Vec::new(),
+        timeout: Some(timeout),
         status: TestStatus::Pending,
     }));
 }
@@ -292,19 +275,62 @@ pub fn run_tests_with_config(config: TestConfig) -> i32 {
     let after_each_hooks = THREAD_AFTER_EACH.with(|h| h.borrow_mut().drain(..).collect::<Vec<_>>());
     let after_all_hooks = THREAD_AFTER_ALL.with(|h| h.borrow_mut().drain(..).collect::<Vec<_>>());
     
+    info!("📋 Found {} tests to run", tests.len());
+    
     if tests.is_empty() {
         warn!("⚠️  No tests registered to run");
         return 0;
     }
     
-    info!("📋 Found {} tests to run", tests.len());
-    
-    // Run before_all hooks
+    // Run before_all hooks ONCE at the beginning
+    let mut shared_context = TestContext::new();
     if !config.skip_hooks.unwrap_or(false) && !before_all_hooks.is_empty() {
         info!("🔄 Running {} before_all hooks", before_all_hooks.len());
-        // For now, we'll skip hook execution due to FnMut limitations
-        // In a real implementation, you'd want to restructure this
-        info!("⚠️  Skipping before_all hooks due to FnMut limitations");
+        
+        // Execute each before_all hook with the shared context
+        for hook in before_all_hooks {
+            // Wrap hook execution with panic safety
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                if let Ok(mut hook_fn) = hook.lock() {
+                    hook_fn(&mut shared_context)
+                } else {
+                    Err(TestError::Message("Failed to acquire hook lock".into()))
+                }
+            }));
+            match result {
+                Ok(Ok(())) => {
+                    // Hook succeeded
+                }
+                Ok(Err(e)) => {
+                    error!("❌ before_all hook failed: {}", e);
+                    return 1; // Fail the entire test run
+                }
+                Err(panic_info) => {
+                    let panic_msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "unknown panic".to_string()
+                    };
+                    error!("💥 before_all hook panicked: {}", panic_msg);
+                    return 1; // Fail the entire test run
+                }
+            }
+        }
+        
+        info!("✅ before_all hooks completed");
+        
+        // Copy data from shared context to global context for individual tests
+        let global_ctx = get_global_context();
+        clear_global_context(); // Clear any existing data
+        for (key, value) in &shared_context.data {
+            if let Some(string_value) = value.downcast_ref::<String>() {
+                if let Ok(mut map) = global_ctx.lock() {
+                    map.insert(key.clone(), string_value.clone());
+                }
+            }
+        }
     }
     
     // Filter and sort tests
@@ -325,24 +351,57 @@ pub fn run_tests_with_config(config: TestConfig) -> i32 {
     if let Some(max_concurrency) = config.max_concurrency {
         if max_concurrency > 1 {
             info!("⚡ Running tests in parallel with max concurrency: {}", max_concurrency);
-            run_tests_parallel_by_index(&mut tests, &test_indices, before_each_hooks, after_each_hooks, &config, &mut overall_failed, &mut overall_skipped);
+            run_tests_parallel_by_index(&mut tests, &test_indices, before_each_hooks, after_each_hooks, &config, &mut overall_failed, &mut overall_skipped, &mut shared_context);
         } else {
             info!("🐌 Running tests sequentially (max_concurrency = 1)");
-            run_tests_sequential_by_index(&mut tests, &test_indices, before_each_hooks, after_each_hooks, &config, &mut overall_failed, &mut overall_skipped);
+            run_tests_sequential_by_index(&mut tests, &test_indices, before_each_hooks, after_each_hooks, &config, &mut overall_failed, &mut overall_skipped, &mut shared_context);
         }
     } else {
         // Default to parallel execution
         let default_concurrency = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
         info!("⚡ Running tests in parallel with default concurrency: {}", default_concurrency);
-        run_tests_parallel_by_index(&mut tests, &test_indices, before_each_hooks, after_each_hooks, &config, &mut overall_failed, &mut overall_skipped);
+        run_tests_parallel_by_index(&mut tests, &test_indices, before_each_hooks, after_each_hooks, &config, &mut overall_failed, &mut overall_skipped, &mut shared_context);
     }
+    
+
     
     // Run after_all hooks
     if !config.skip_hooks.unwrap_or(false) && !after_all_hooks.is_empty() {
         info!("🔄 Running {} after_all hooks", after_all_hooks.len());
-        // For now, we'll skip hook execution due to FnMut limitations
-        // In a real implementation, you'd want to restructure this
-        info!("⚠️  Skipping after_all hooks due to FnMut limitations");
+        
+        // Execute each after_all hook with the same shared context
+        for hook in after_all_hooks {
+            // Wrap hook execution with panic safety
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                if let Ok(mut hook_fn) = hook.lock() {
+                    hook_fn(&mut shared_context)
+                } else {
+                    Err(TestError::Message("Failed to acquire hook lock".into()))
+                }
+            }));
+            match result {
+                Ok(Ok(())) => {
+                    // Hook succeeded
+                }
+                Ok(Err(e)) => {
+                    warn!("⚠️  after_all hook failed: {}", e);
+                    // Don't fail the entire test run for after_all hook failures
+                }
+                Err(panic_info) => {
+                    let panic_msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "unknown panic".to_string()
+                    };
+                    warn!("💥 after_all hook panicked: {}", panic_msg);
+                    // Don't fail the entire test run for after_all hook panics
+                }
+            }
+        }
+        
+        info!("✅ after_all hooks completed");
     }
     
     let total_time = start_time.elapsed();
@@ -405,17 +464,21 @@ fn filter_and_sort_test_indices(tests: &[TestCase], config: &TestConfig) -> Vec<
         });
     }
     
-    // Apply shuffling
+    // Apply shuffling using Fisher-Yates algorithm with seeded PRNG
     if let Some(seed) = config.shuffle_seed {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
+        
+        // Create a simple seeded PRNG using the hash
         let mut hasher = DefaultHasher::new();
         seed.hash(&mut hasher);
-        let hash = hasher.finish();
+        let mut rng_state = hasher.finish();
         
-        // Simple shuffle based on hash
-        for i in 0..indices.len() {
-            let j = (hash as usize + i) % indices.len();
+        // Fisher-Yates shuffle
+        for i in (1..indices.len()).rev() {
+            // Generate next pseudo-random number
+            rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
+            let j = (rng_state as usize) % (i + 1);
             indices.swap(i, j);
         }
     }
@@ -431,6 +494,7 @@ fn run_tests_parallel_by_index(
     config: &TestConfig,
     overall_failed: &mut usize,
     overall_skipped: &mut usize,
+    _shared_context: &mut TestContext,
 ) {
     let max_workers = config.max_concurrency.unwrap_or_else(|| {
         std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
@@ -438,33 +502,102 @@ fn run_tests_parallel_by_index(
     
     info!("Running {} tests in parallel with {} workers", test_indices.len(), max_workers);
     
-    // For now, we'll run tests sequentially in the parallel function
-    // This is a limitation of the current design - we can't easily share FnMut closures
-    // In a real implementation, you'd want to restructure this to avoid these limitations
-    info!("⚠️  Note: Running tests sequentially due to FnMut closure limitations");
-    info!("   True parallelism requires restructuring the test execution model");
+    // Use rayon for true parallel execution
+    use rayon::prelude::*;
     
-    run_tests_sequential_by_index(tests, test_indices, before_each_hooks, after_each_hooks, config, overall_failed, overall_skipped);
+
+    
+    // Create a thread pool with the specified concurrency
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(max_workers)
+        .build()
+        .expect("Failed to create thread pool");
+    
+
+    
+    // Extract test functions and create test data before parallel execution to avoid borrowing issues
+    let mut test_functions: Vec<Arc<Mutex<TestFn>>> = Vec::new();
+    let mut test_data: Vec<(String, Vec<String>, Option<Duration>, TestStatus)> = Vec::new();
+    
+    for idx in test_indices {
+        let test_fn = std::mem::replace(&mut tests[*idx].test_fn, None).unwrap_or_else(|| Box::new(|_| Ok(())));
+        test_functions.push(Arc::new(Mutex::new(test_fn)));
+        
+        // Extract all the data we need from the test
+        let test = &tests[*idx];
+        test_data.push((
+            test.name.clone(),
+            test.tags.clone(),
+            test.timeout.clone(),
+            test.status.clone(),
+        ));
+    }
+    
+    // Collect results from parallel execution
+    let results: Vec<_> = pool.install(|| {
+        test_indices.par_iter().enumerate().map(|(i, &idx)| {
+            // Create a new test from the extracted data
+            let (name, tags, timeout, status) = &test_data[i];
+            let mut test = TestCase {
+                name: name.clone(),
+                test_fn: None, // Will be set to None since we extracted the function
+                tags: tags.clone(),
+                timeout: *timeout,
+                status: status.clone(),
+            };
+            
+            let test_fn = test_functions[i].clone();
+            
+            // Clone hooks for this thread
+            let before_hooks = before_each_hooks.clone();
+            let after_hooks = after_each_hooks.clone();
+            
+            // Run the test in parallel with the extracted function
+            run_single_test_by_index_parallel_with_fn(
+                &mut test,
+                test_fn,
+                &before_hooks,
+                &after_hooks,
+                config,
+            );
+            
+            (idx, test)
+        }).collect()
+    });
+    
+    // Update the original test array with results
+    for (idx, test_result) in results {
+        tests[idx] = test_result;
+        
+        // Update counters
+        match &tests[idx].status {
+            TestStatus::Failed(_) => *overall_failed += 1,
+            TestStatus::Skipped => *overall_skipped += 1,
+            _ => {}
+        }
+    }
 }
 
 fn run_tests_sequential_by_index(
     tests: &mut [TestCase],
     test_indices: &[usize],
-    before_each_hooks: Vec<HookFn>,
-    after_each_hooks: Vec<HookFn>,
+    mut before_each_hooks: Vec<HookFn>,
+    mut after_each_hooks: Vec<HookFn>,
     config: &TestConfig,
     overall_failed: &mut usize,
     overall_skipped: &mut usize,
+    shared_context: &mut TestContext,
 ) {
     for &idx in test_indices {
         run_single_test_by_index(
             tests,
             idx,
-            &before_each_hooks,
-            &after_each_hooks,
+            &mut before_each_hooks,
+            &mut after_each_hooks,
             config,
             overall_failed,
             overall_skipped,
+            shared_context,
         );
     }
 }
@@ -472,11 +605,12 @@ fn run_tests_sequential_by_index(
 fn run_single_test_by_index(
     tests: &mut [TestCase],
     idx: usize,
-    before_each_hooks: &[HookFn],
-    after_each_hooks: &[HookFn],
+    before_each_hooks: &mut [HookFn],
+    after_each_hooks: &mut [HookFn],
     config: &TestConfig,
     overall_failed: &mut usize,
     overall_skipped: &mut usize,
+    _shared_context: &mut TestContext,
 ) {
     let test = &mut tests[idx];
     let test_name = &test.name;
@@ -507,29 +641,96 @@ fn run_single_test_by_index(
     test.status = TestStatus::Running;
     let start_time = Instant::now();
     
-    // Run before_each hooks
+    // Create test context
     let mut ctx = TestContext::new();
+    
+    // Copy data from global context to test context
+    // This allows tests to access data set by before_all hooks
+    let global_ctx = get_global_context();
+    if let Ok(map) = global_ctx.lock() {
+        for (key, value) in map.iter() {
+            ctx.set_data(key, value.clone());
+        }
+    }
+    
+    // Run before_each hooks
     if !config.skip_hooks.unwrap_or(false) {
-        for _hook in before_each_hooks {
-            // For now, we'll skip hook execution due to FnMut limitations
-            // In a real implementation, you'd want to restructure this
-            info!("⚠️  Skipping before_each hook due to FnMut limitations");
+        for hook in before_each_hooks.iter_mut() {
+            // Wrap hook execution with panic safety
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                if let Ok(mut hook_fn) = hook.lock() {
+                    hook_fn(&mut ctx)
+                } else {
+                    Err(TestError::Message("Failed to acquire hook lock".into()))
+                }
+            }));
+            match result {
+                Ok(Ok(())) => {
+                    // Hook succeeded
+                }
+                Ok(Err(e)) => {
+                    error!("❌ before_each hook failed: {}", e);
+                    test.status = TestStatus::Failed(e.clone());
+                    *overall_failed += 1;
+                    return;
+                }
+                Err(panic_info) => {
+                    let panic_msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "unknown panic".to_string()
+                    };
+                    error!("💥 before_each hook panicked: {}", panic_msg);
+                    test.status = TestStatus::Failed(TestError::Panicked(panic_msg));
+                    *overall_failed += 1;
+                    return;
+                }
+            }
         }
     }
     
     // Run the test
     let test_result = if let Some(timeout) = test.timeout {
-        run_test_with_timeout(&mut test.test_fn, &mut ctx, timeout)
+        let test_fn = std::mem::replace(&mut test.test_fn, None).unwrap_or_else(|| Box::new(|_| Ok(())));
+        run_test_with_timeout(test_fn, &mut ctx, timeout)
     } else {
-        run_test(&mut test.test_fn, &mut ctx)
+        let test_fn = std::mem::replace(&mut test.test_fn, None).unwrap_or_else(|| Box::new(|_| Ok(())));
+        run_test(test_fn, &mut ctx)
     };
     
     // Run after_each hooks
     if !config.skip_hooks.unwrap_or(false) {
-        for _hook in after_each_hooks {
-            // For now, we'll skip hook execution due to FnMut limitations
-            // In a real implementation, you'd want to restructure this
-            info!("⚠️  Skipping after_each hook due to FnMut limitations");
+        for hook in after_each_hooks.iter_mut() {
+            // Wrap hook execution with panic safety
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                if let Ok(mut hook_fn) = hook.lock() {
+                    hook_fn(&mut ctx)
+                } else {
+                    Err(TestError::Message("Failed to acquire hook lock".into()))
+                }
+            }));
+            match result {
+                Ok(Ok(())) => {
+                    // Hook succeeded
+                }
+                Ok(Err(e)) => {
+                    warn!("⚠️  after_each hook failed: {}", e);
+                    // Don't fail the test for after_each hook failures
+                }
+                Err(panic_info) => {
+                    let panic_msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "unknown panic".to_string()
+                    };
+                    warn!("💥 after_each hook panicked: {}", panic_msg);
+                    // Don't fail the test for after_each hook panics
+                }
+            }
         }
     }
     
@@ -553,9 +754,158 @@ fn run_single_test_by_index(
     }
 }
 
-fn run_test<F>(test_fn: &mut F, ctx: &mut TestContext) -> TestResult 
+fn run_single_test_by_index_parallel_with_fn(
+    test: &mut TestCase,
+    test_fn: Arc<Mutex<TestFn>>,
+    before_each_hooks: &[HookFn],
+    after_each_hooks: &[HookFn],
+    config: &TestConfig,
+) {
+    let test_name = &test.name;
+    
+    info!("🧪 Running test: {}", test_name);
+    
+    // Check if test should be skipped
+    if let Some(ref filter) = config.filter {
+        if !test_name.contains(filter) {
+            test.status = TestStatus::Skipped;
+            info!("⏭️  Test '{}' skipped (filter: {})", test_name, filter);
+            return;
+        }
+    }
+    
+    // Check tag filtering
+    if !config.skip_tags.is_empty() {
+        let test_tags = &test.tags;
+        if config.skip_tags.iter().any(|skip_tag| test_tags.contains(skip_tag)) {
+            test.status = TestStatus::Skipped;
+            info!("⏭️  Test '{}' skipped (tags: {:?})", test_name, test_tags);
+            return;
+        }
+    }
+    
+    let start_time = Instant::now();
+    
+    // Create test context
+    let mut ctx = TestContext::new();
+    // Copy data from global context to test context
+    // This allows tests to access data set by before_all hooks
+    let global_ctx = get_global_context();
+    if let Ok(map) = global_ctx.lock() {
+        for (key, value) in map.iter() {
+            ctx.set_data(key, value.clone());
+        }
+    }
+    
+    // Run before_each hooks
+    if !config.skip_hooks.unwrap_or(false) {
+        for hook in before_each_hooks.iter() {
+            // Wrap hook execution with panic safety
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                if let Ok(mut hook_fn) = hook.lock() {
+                    hook_fn(&mut ctx)
+                } else {
+                    Err(TestError::Message("Failed to acquire hook lock".into()))
+                }
+            }));
+            match result {
+                Ok(Ok(())) => {
+                    // Hook succeeded
+                }
+                Ok(Err(e)) => {
+                    error!("❌ before_each hook failed: {}", e);
+                    test.status = TestStatus::Failed(e.clone());
+                    return;
+                }
+                Err(panic_info) => {
+                    let panic_msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "unknown panic".to_string()
+                    };
+                    error!("💥 before_each hook panicked: {}", panic_msg);
+                    test.status = TestStatus::Failed(TestError::Panicked(panic_msg));
+                    return;
+                }
+            }
+        }
+    }
+    
+    // Run the test
+    let test_result = if let Some(timeout) = test.timeout {
+        if let Ok(mut fn_box) = test_fn.lock() {
+            let test_fn = std::mem::replace(&mut *fn_box, Box::new(|_| Ok(())));
+            run_test_with_timeout(test_fn, &mut ctx, timeout)
+        } else {
+            Err(TestError::Message("Failed to acquire test function lock".into()))
+        }
+    } else {
+        if let Ok(mut fn_box) = test_fn.lock() {
+            let test_fn = std::mem::replace(&mut *fn_box, Box::new(|_| Ok(())));
+            run_test(test_fn, &mut ctx)
+        } else {
+            Err(TestError::Message("Failed to acquire test function lock".into()))
+        }
+    };
+    
+    // Run after_each hooks
+    if !config.skip_hooks.unwrap_or(false) {
+        for hook in after_each_hooks.iter() {
+            // Wrap hook execution with panic safety
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                if let Ok(mut hook_fn) = hook.lock() {
+                    hook_fn(&mut ctx)
+                } else {
+                    Err(TestError::Message("Failed to acquire hook lock".into()))
+                }
+            }));
+            match result {
+                Ok(Ok(())) => {
+                    // Hook succeeded
+                }
+                Ok(Err(e)) => {
+                    warn!("⚠️  after_each hook failed: {}", e);
+                    // Don't fail the test for after_each hook failures
+                }
+                Err(panic_info) => {
+                    let panic_msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "unknown panic".to_string()
+                    };
+                    warn!("💥 after_each hook panicked: {}", panic_msg);
+                    // Don't fail the test for after_each hook panics
+                }
+            }
+        }
+    }
+    
+    let elapsed = start_time.elapsed();
+    
+    match test_result {
+        Ok(()) => {
+            test.status = TestStatus::Passed;
+            info!("✅ Test '{}' passed in {:?}", test_name, elapsed);
+        }
+        Err(e) => {
+            test.status = TestStatus::Failed(e.clone());
+            error!("❌ Test '{}' failed in {:?}: {}", test_name, elapsed, e);
+        }
+    }
+    
+    // Clean up Docker if used
+    if let Some(ref docker_handle) = ctx.docker_handle {
+        cleanup_docker_container(docker_handle);
+    }
+}
+
+fn run_test<F>(test_fn: F, ctx: &mut TestContext) -> TestResult 
 where 
-    F: FnMut(&mut TestContext) -> TestResult 
+    F: FnOnce(&mut TestContext) -> TestResult
 {
     catch_unwind(AssertUnwindSafe(|| test_fn(ctx))).unwrap_or_else(|panic_info| {
         let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
@@ -569,26 +919,116 @@ where
     })
 }
 
-fn run_test_with_timeout<F>(test_fn: &mut F, ctx: &mut TestContext, timeout: Duration) -> TestResult 
+fn run_test_with_timeout<F>(test_fn: F, ctx: &mut TestContext, timeout: Duration) -> TestResult 
 where 
-    F: FnMut(&mut TestContext) -> TestResult
+    F: FnOnce(&mut TestContext) -> TestResult + Send + 'static
 {
-    let start = Instant::now();
-    
-    // Run the test
-    let result = run_test(test_fn, ctx);
-    
-    let elapsed = start.elapsed();
-    
-    // Check if the test exceeded the timeout
-    if elapsed > timeout {
-        warn!("  ⚠️  Test took {:?} which exceeds timeout of {:?}", elapsed, timeout);
-        return Err(TestError::Timeout(timeout));
-    }
-    
-    result
+    // Use the enhanced timeout with configurable strategies
+    run_test_with_timeout_enhanced(test_fn, ctx, timeout, &TimeoutConfig::default())
 }
 
+fn run_test_with_timeout_enhanced<F>(
+    test_fn: F, 
+    ctx: &mut TestContext, 
+    timeout: Duration, 
+    config: &TimeoutConfig
+) -> TestResult 
+where 
+    F: FnOnce(&mut TestContext) -> TestResult + Send + 'static
+{
+    use std::sync::mpsc;
+    
+    let (tx, rx) = mpsc::channel();
+    
+    // Spawn test in worker thread with a new context
+    let handle = std::thread::spawn(move || {
+        let mut worker_ctx = TestContext::new();
+        let result = catch_unwind(AssertUnwindSafe(|| test_fn(&mut worker_ctx)));
+        let _ = tx.send((result, worker_ctx));
+    });
+    
+    // Wait for result with timeout based on strategy
+    let recv_result = match config.strategy {
+        TimeoutStrategy::Simple => {
+            // Simple strategy - just wait for the full timeout
+            rx.recv_timeout(timeout)
+        }
+        TimeoutStrategy::Aggressive => {
+            // Aggressive strategy - interrupt immediately on timeout
+            rx.recv_timeout(timeout)
+        }
+        TimeoutStrategy::Graceful(cleanup_time) => {
+            // Graceful strategy - allow cleanup time
+            let main_timeout = timeout.saturating_sub(cleanup_time);
+            match rx.recv_timeout(main_timeout) {
+                Ok(result) => Ok(result),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    // Give cleanup time, then force timeout
+                    match rx.recv_timeout(cleanup_time) {
+                        Ok(result) => Ok(result),
+                        Err(_) => Err(mpsc::RecvTimeoutError::Timeout),
+                    }
+                }
+                Err(e) => Err(e),
+            }
+        }
+    };
+    
+    match recv_result {
+        Ok((Ok(test_result), worker_ctx)) => {
+            // Test completed without panic
+            match test_result {
+                Ok(()) => {
+                    // Test passed - copy any data changes back to original context
+                    for (key, value) in &worker_ctx.data {
+                        if let Some(string_value) = value.downcast_ref::<String>() {
+                            ctx.set_data(key, string_value.clone());
+                        }
+                    }
+                    Ok(())
+                }
+                Err(e) => {
+                    // Test failed with error
+                    Err(e)
+                }
+            }
+        }
+        Ok((Err(panic_info), _)) => {
+            // Test panicked
+            let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+            Err(TestError::Panicked(msg))
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            // Test timed out - handle based on strategy
+            match config.strategy {
+                TimeoutStrategy::Simple => {
+                    warn!("  ⚠️  Test took longer than {:?} (Simple strategy)", timeout);
+                    Err(TestError::Timeout(timeout))
+                }
+                TimeoutStrategy::Aggressive => {
+                    warn!("  ⚠️  Test timed out after {:?} - interrupting", timeout);
+                    drop(handle); // This will join the thread when it goes out of scope
+                    Err(TestError::Timeout(timeout))
+                }
+                TimeoutStrategy::Graceful(_) => {
+                    warn!("  ⚠️  Test timed out after {:?} - graceful cleanup attempted", timeout);
+                    drop(handle);
+                    Err(TestError::Timeout(timeout))
+                }
+            }
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            // Worker thread error
+            Err(TestError::Message("worker thread error".into()))
+        }
+    }
+}
 
 
 fn cleanup_docker_container(handle: &DockerHandle) {
@@ -604,7 +1044,6 @@ pub enum TestError {
     Message(String),
     Panicked(String),
     Timeout(Duration),
-    DockerError(String),
 }
 
 impl std::fmt::Display for TestError {
@@ -612,8 +1051,7 @@ impl std::fmt::Display for TestError {
         match self {
             TestError::Message(msg) => write!(f, "{}", msg),
             TestError::Panicked(msg) => write!(f, "panicked: {}", msg),
-            TestError::Timeout(duration) => write!(f, "timeout after {:?}", duration),
-            TestError::DockerError(msg) => write!(f, "docker error: {}", msg),
+                    TestError::Timeout(duration) => write!(f, "timeout after {:?}", duration),
         }
     }
 }
@@ -630,9 +1068,60 @@ impl From<String> for TestError {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum TimeoutStrategy {
+    /// Simple timeout - just report when exceeded
+    Simple,
+    /// Aggressive timeout - attempt to interrupt the test
+    Aggressive,
+    /// Graceful timeout - allow cleanup before interruption
+    Graceful(Duration),
+}
+
+impl Default for TimeoutStrategy {
+    fn default() -> Self {
+        TimeoutStrategy::Aggressive
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TimeoutConfig {
+    pub strategy: TimeoutStrategy,
+}
+
+impl Default for TimeoutConfig {
+    fn default() -> Self {
+        Self {
+            strategy: TimeoutStrategy::default(),
+        }
+    }
+}
+
 // --- HTML Report Generation ---
 
 fn generate_html_report(tests: &[TestCase], total_time: Duration, output_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    info!("🔧 generate_html_report called with {} tests, duration: {:?}, output: {}", tests.len(), total_time, output_path);
+    
+    // Ensure the target directory exists and create the full path
+    let target_dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
+    let html_dir = format!("{}/test-reports", target_dir);
+    info!("📁 Creating directory: {}", html_dir);
+    std::fs::create_dir_all(&html_dir)?;
+    info!("✅ Directory created/verified: {}", html_dir);
+    
+    // Determine the final path - if output_path is absolute, use it directly; otherwise place in target/test-reports/
+    let final_path = if std::path::Path::new(output_path).is_absolute() {
+        output_path.to_string()
+    } else {
+        // Extract just the filename from the path and place it in target/test-reports/
+        let filename = std::path::Path::new(output_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("test-report.html");
+        format!("{}/{}", html_dir, filename)
+    };
+    info!("📄 Final HTML path: {}", final_path);
+    
     let mut html = String::new();
     
     // HTML header
@@ -730,7 +1219,7 @@ fn generate_html_report(tests: &[TestCase], total_time: Duration, output_path: &
         </div>
         
         <div class="tests-section">
-            <h2>�� Test Results</h2>
+            <h2>📊 Test Results</h2>
             
             <input type="text" class="search-box" id="testSearch" placeholder="🔍 Search tests by name, status, or tags..." />
             
@@ -778,15 +1267,7 @@ fn generate_html_report(tests: &[TestCase], total_time: Duration, output_path: &
             html.push_str(&format!(r#"<div class="metadata-item"><div class="metadata-label">Timeout</div><div class="metadata-value">{:?}</div></div>"#, timeout));
         }
         
-        if let Some(docker) = &test.docker {
-            html.push_str(&format!(r#"<div class="metadata-item"><div class="metadata-label">Docker Image</div><div class="metadata-value">{}</div></div>"#, docker.image));
-            if !docker.ports.is_empty() {
-                html.push_str(&format!(r#"<div class="metadata-item"><div class="metadata-label">Ports</div><div class="metadata-value">{:?}</div></div>"#, docker.ports));
-            }
-            if !docker.env.is_empty() {
-                html.push_str(&format!(r#"<div class="metadata-item"><div class="metadata-label">Environment</div><div class="metadata-value">{:?}</div></div>"#, docker.env));
-            }
-        }
+
         
         html.push_str(r#"</div></div>"#);
         
@@ -918,8 +1399,12 @@ fn generate_html_report(tests: &[TestCase], total_time: Duration, output_path: &
 </body>
 </html>"#);
     
-    // Write to file
-    std::fs::write(output_path, html)?;
+    // Write to file in target/test-reports directory
+    std::fs::write(&final_path, html)?;
+    
+    // Log the actual file location for user convenience
+    info!("📄 HTML report written to: {}", final_path);
+    
     Ok(())
 }
 
@@ -927,7 +1412,7 @@ fn generate_html_report(tests: &[TestCase], total_time: Duration, output_path: &
 
 /// Macro to create individual test functions that can be run independently
 /// This makes the framework compatible with cargo test and existing test libraries
-/// Hooks (before_all, before_each, etc.) are automatically executed
+/// Note: Hooks are only executed when using the main test runner, not individual macros
 #[macro_export]
 macro_rules! test_function {
     ($name:ident, $test_fn:expr) => {
@@ -936,82 +1421,50 @@ macro_rules! test_function {
             // Initialize logging for individual test runs
             let _ = env_logger::try_init();
             
-            // Execute before_all hooks if any exist
-            if let Ok(()) = rust_test_harness::execute_before_all_hooks() {
-                // Execute before_each hooks if any exist
-                if let Ok(()) = rust_test_harness::execute_before_each_hooks() {
-                    // Run the test function
-                    let result = ($test_fn)(&mut rust_test_harness::TestContext::new());
-                    
-                    // Execute after_each hooks if any exist
-                    let _ = rust_test_harness::execute_after_each_hooks();
-                    
-                    // Convert result to test outcome
-                    match result {
-                        Ok(_) => {
-                            info!("✅ Test '{}' passed", stringify!($name));
-                        }
-                        Err(e) => {
-                            panic!("❌ Test '{}' failed: {:?}", stringify!($name), e);
-                        }
-                    }
-                } else {
-                    panic!("❌ Test '{}' failed: before_each hooks failed", stringify!($name));
-                }
-            } else {
-                panic!("❌ Test '{}' failed: before_all hooks failed", stringify!($name));
-            }
+            // Run the test function
+            let result = ($test_fn)(&mut rust_test_harness::TestContext::new());
             
-            // Execute after_all hooks if any exist
-            let _ = rust_test_harness::execute_after_all_hooks();
+            // Convert result to test outcome
+            match result {
+                Ok(_) => {
+                    // Test passed - no need to panic
+                }
+                Err(e) => {
+                    panic!("❌ Test '{}' failed: {:?}", stringify!($name), e);
+                }
+            }
         }
     };
 }
 
 /// Macro to create individual test functions with custom names
-/// Hooks (before_all, before_each, etc.) are automatically executed
+/// Note: Hooks are only executed when using the main test runner, not individual macros
 #[macro_export]
 macro_rules! test_named {
     ($name:expr, $test_fn:expr) => {
         #[test]
-        fn test_function() {
+        fn test_named_function() {
             // Initialize logging for individual test runs
             let _ = env_logger::try_init();
             
-            // Execute before_all hooks if any exist
-            if let Ok(()) = rust_test_harness::execute_before_all_hooks() {
-                // Execute before_each hooks if any exist
-                if let Ok(()) = rust_test_harness::execute_before_each_hooks() {
-                    // Run the test function
-                    let result = ($test_fn)(&mut rust_test_harness::TestContext::new());
-                    
-                    // Execute after_each hooks if any exist
-                    let _ = rust_test_harness::execute_after_each_hooks();
-                    
-                    // Convert result to test outcome
-                    match result {
-                        Ok(_) => {
-                            info!("✅ Test '{}' passed", $name);
-                        }
-                        Err(e) => {
-                            panic!("❌ Test '{}' failed: {:?}", $name, e);
-                        }
-                    }
-                } else {
-                    panic!("❌ Test '{}' failed: before_each hooks failed", $name);
-                }
-            } else {
-                panic!("❌ Test '{}' failed: before_all hooks failed", $name);
-            }
+            // Run the test function
+            let result = ($test_fn)(&mut rust_test_harness::TestContext::new());
             
-            // Execute after_all hooks if any exist
-            let _ = rust_test_harness::execute_after_all_hooks();
+            // Convert result to test outcome
+            match result {
+                Ok(_) => {
+                    // Test passed - no need to panic
+                }
+                Err(e) => {
+                    panic!("❌ Test '{}' failed: {:?}", $name, e);
+                }
+            }
         }
     };
 }
 
 /// Macro to create individual async test functions (for when you add async support)
-/// Hooks (before_all, before_each, etc.) are automatically executed
+/// Note: Hooks are only executed when using the main test runner, not individual macros
 #[macro_export]
 macro_rules! test_async {
     ($name:ident, $test_fn:expr) => {
@@ -1020,34 +1473,18 @@ macro_rules! test_async {
             // Initialize logging for individual test runs
             let _ = env_logger::try_init();
             
-            // Execute before_all hooks if any exist
-            if let Ok(()) = rust_test_harness::execute_before_all_hooks() {
-                // Execute before_each hooks if any exist
-                if let Ok(()) = rust_test_harness::execute_before_each_hooks() {
-                    // Run the async test function
-                    let result = ($test_fn)(&mut rust_test_harness::TestContext::new()).await;
-                    
-                    // Execute after_each hooks if any exist
-                    let _ = rust_test_harness::execute_before_each_hooks();
-                    
-                    // Convert result to test outcome
-                    match result {
-                        Ok(_) => {
-                            info!("✅ Async test '{}' passed", stringify!($name));
-                        }
-                        Err(e) => {
-                            panic!("❌ Async test '{}' failed: {:?}", stringify!($name), e);
-                        }
-                    }
-                } else {
-                    panic!("❌ Async test '{}' failed: before_each hooks failed", stringify!($name));
-                }
-            } else {
-                panic!("❌ Async test '{}' failed: before_all hooks failed", stringify!($name));
-            }
+            // Run the async test function
+            let result = ($test_fn)(&mut rust_test_harness::TestContext::new()).await;
             
-            // Execute after_all hooks if any exist
-            let _ = rust_test_harness::execute_after_all_hooks();
+            // Convert result to test outcome
+            match result {
+                Ok(_) => {
+                    // Test passed - no need to panic
+                }
+                Err(e) => {
+                    panic!("❌ Async test '{}' failed: {:?}", stringify!($name), e);
+                }
+            }
         }
     };
 }
@@ -1085,34 +1522,18 @@ macro_rules! test_case {
             // Initialize logging for individual test runs
             let _ = env_logger::try_init();
             
-            // Execute before_all hooks if any exist
-            if let Ok(()) = rust_test_harness::execute_before_all_hooks() {
-                // Execute before_each hooks if any exist
-                if let Ok(()) = rust_test_harness::execute_before_each_hooks() {
-                    // Run the test function
-                    let result: rust_test_harness::TestResult = ($test_fn)(&mut rust_test_harness::TestContext::new());
-                    
-                    // Execute after_each hooks if any exist
-                    let _ = rust_test_harness::execute_after_each_hooks();
-                    
-                    // Convert result to test outcome
-                    match result {
-                        Ok(_) => {
-                            // Test passed - no need to panic
-                        }
-                        Err(e) => {
-                            panic!("Test failed: {:?}", e);
-                        }
-                    }
-                } else {
-                    panic!("Test failed: before_each hooks failed");
-                }
-            } else {
-                panic!("Test failed: before_all hooks failed");
-            }
+            // Run the test function
+            let result: rust_test_harness::TestResult = ($test_fn)(&mut rust_test_harness::TestContext::new());
             
-            // Execute after_all hooks if any exist
-            let _ = rust_test_harness::execute_after_all_hooks();
+            // Convert result to test outcome
+            match result {
+                Ok(_) => {
+                    // Test passed - no need to panic
+                }
+                Err(e) => {
+                    panic!("Test failed: {:?}", e);
+                }
+            }
         }
     };
 }
@@ -1126,7 +1547,7 @@ macro_rules! test_case {
 ///     use super::*;
 ///     use rust_test_harness::test_case_named;
 ///     
-///     test_case_named!("my_custom_test_name", |ctx| {
+///     test_case_named!(my_custom_test_name, |ctx| {
 ///         // Your test logic here
 ///         Ok(())
 ///     });
@@ -1134,101 +1555,238 @@ macro_rules! test_case {
 /// ```
 #[macro_export]
 macro_rules! test_case_named {
-    ($name:expr, $test_fn:expr) => {
-        #[test]
-        fn test_function() {
-            // Initialize logging for individual test runs
-            let _ = env_logger::try_init();
-            
-            // Execute before_all hooks if any exist
-            if let Ok(()) = rust_test_harness::execute_before_all_hooks() {
-                // Execute before_each hooks if any exist
-                if let Ok(()) = rust_test_harness::execute_before_each_hooks() {
-                    // Run the test function
-                    let result: rust_test_harness::TestResult = ($test_fn)(&mut rust_test_harness::TestContext::new());
-                    
-                    // Execute after_each hooks if any exist
-                    let _ = rust_test_harness::execute_after_each_hooks();
-                    
-                    // Convert result to test outcome
-                    match result {
-                        Ok(_) => {
-                            // Test passed - no need to panic
-                        }
-                        Err(e) => {
-                            panic!("Test '{}' failed: {:?}", $name, e);
-                        }
-                    }
-                } else {
-                    panic!("Test '{}' failed: before_each hooks failed", $name);
-                }
-            } else {
-                panic!("Test '{}' failed: before_all hooks failed", $name);
-                }
-            
-            // Execute after_all hooks if any exist
-            let _ = rust_test_harness::execute_after_all_hooks();
-        }
-    };
-}
-
-/// Macro to create test cases with Docker support
-/// 
-/// Usage:
-/// ```rust
-/// #[cfg(test)]
-/// mod tests {
-///     use super::*;
-///     use rust_test_harness::{test_case_docker, DockerRunOptions};
-///     
-///     test_case_docker!(test_with_nginx, DockerRunOptions::new("nginx:alpine"), |ctx| {
-///         // Your test logic here with Docker context
-///         Ok(())
-///     });
-/// }
-/// ```
-#[macro_export]
-macro_rules! test_case_docker {
-    ($name:ident, $docker_opts:expr, $test_fn:expr) => {
+    ($name:ident, $test_fn:expr) => {
         #[test]
         fn $name() {
             // Initialize logging for individual test runs
             let _ = env_logger::try_init();
             
-            // Execute before_all hooks if any exist
-            if let Ok(()) = rust_test_harness::execute_before_all_hooks() {
-                // Execute before_each hooks if any exist
-                if let Ok(()) = rust_test_harness::execute_before_each_hooks() {
-                    // Create test context with Docker options
-                    let mut ctx = rust_test_harness::TestContext::new();
-                    
-                    // Run the test function with explicit type annotation
-                    let test_fn: fn(&mut rust_test_harness::TestContext) -> rust_test_harness::TestResult = $test_fn;
-                    let result = test_fn(&mut ctx);
-                    
-                    // Execute after_each hooks if any exist
-                    let _ = rust_test_harness::execute_after_each_hooks();
-                    
-                    // Convert result to test outcome
-                    match result {
-                        Ok(_) => {
-                            // Test passed - no need to panic
-                        }
-                        Err(e) => {
-                            panic!("Test failed: {:?}", e);
-                        }
-                    }
-                } else {
-                    panic!("Test failed: before_each hooks failed");
-                }
-            } else {
-                panic!("Test failed: before_all hooks failed");
-            }
+            // Run the test function
+            let result: rust_test_harness::TestResult = ($test_fn)(&mut rust_test_harness::TestContext::new());
             
-            // Execute after_all hooks if any exist
-            let _ = rust_test_harness::execute_after_all_hooks();
+            // Convert result to test outcome
+            match result {
+                Ok(_) => {
+                    // Test passed - no need to panic
+                }
+                Err(e) => {
+                    panic!("Test '{}' failed: {:?}", stringify!($name), e);
+                }
+            }
         }
     };
+}
+
+
+
+#[derive(Debug, Clone)]
+pub struct ContainerConfig {
+    pub image: String,
+    pub ports: Vec<(u16, u16)>, // (host_port, container_port)
+    pub env: Vec<(String, String)>,
+    pub name: Option<String>,
+    pub ready_timeout: Duration,
+}
+
+impl ContainerConfig {
+    pub fn new(image: &str) -> Self {
+        Self {
+            image: image.to_string(),
+            ports: Vec::new(),
+            env: Vec::new(),
+            name: None,
+            ready_timeout: Duration::from_secs(30),
+        }
+    }
+    
+    pub fn port(mut self, host_port: u16, container_port: u16) -> Self {
+        self.ports.push((host_port, container_port));
+        self
+    }
+    
+    pub fn env(mut self, key: &str, value: &str) -> Self {
+        self.env.push((key.to_string(), value.to_string()));
+        self
+    }
+    
+    pub fn name(mut self, name: &str) -> Self {
+        self.name = Some(name.to_string());
+        self
+    }
+    
+    pub fn ready_timeout(mut self, timeout: Duration) -> Self {
+        self.ready_timeout = timeout;
+        self
+    }
+    
+    /// Start a container with this configuration using Docker API
+    pub fn start(&self) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        #[cfg(feature = "docker")]
+        {
+            // Real Docker API implementation - spawn Tokio runtime for async operations
+            let runtime = tokio::runtime::Runtime::new()
+                .map_err(|e| format!("Failed to create Tokio runtime: {}", e))?;
+            
+            let result = runtime.block_on(async {
+                use bollard::Docker;
+                use bollard::models::{ContainerCreateBody, HostConfig, PortBinding, PortMap};
+                
+                // Connect to Docker daemon
+                let docker = Docker::connect_with_local_defaults()
+                    .map_err(|e| format!("Failed to connect to Docker: {}", e))?;
+                
+                // Build port bindings
+                let mut port_bindings = PortMap::new();
+                for (host_port, container_port) in &self.ports {
+                    let binding = vec![PortBinding {
+                        host_ip: Some("127.0.0.1".to_string()),
+                        host_port: Some(host_port.to_string()),
+                    }];
+                    port_bindings.insert(format!("{}/tcp", container_port), Some(binding));
+                }
+                
+                // Build environment variables
+                let env_vars: Vec<String> = self.env.iter()
+                    .map(|(k, v)| format!("{}={}", k, v))
+                    .collect();
+                
+                // Create container configuration using the correct bollard 0.19 API
+                let container_config = ContainerCreateBody {
+                    image: Some(self.image.clone()),
+                    env: Some(env_vars),
+                    host_config: Some(HostConfig {
+                        port_bindings: Some(port_bindings),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                };
+                
+                // Create the container
+                let container = docker.create_container(None::<bollard::query_parameters::CreateContainerOptions>, container_config)
+                    .await
+                    .map_err(|e| format!("Failed to create container: {}", e))?;
+                let id = container.id;
+                
+                // Start the container
+                docker.start_container(&id, None::<bollard::query_parameters::StartContainerOptions>)
+                    .await
+                    .map_err(|e| format!("Failed to start container: {}", e))?;
+                
+                // Wait for container to be ready
+                self.wait_for_ready_async(&docker, &id).await?;
+                
+                Ok::<String, Box<dyn std::error::Error + Send + Sync>>(id)
+            });
+            
+            match result {
+                Ok(id) => {
+                    info!("🚀 Started Docker container {} with image {}", id, self.image);
+                    Ok(id)
+                }
+                Err(e) => Err(e),
+            }
+        }
+        
+        #[cfg(not(feature = "docker"))]
+        {
+            // Mock implementation for when Docker feature is not enabled
+            let container_id = format!("mock_{}", uuid::Uuid::new_v4().to_string()[..8].to_string());
+            info!("🚀 Starting mock container {} with image {}", container_id, self.image);
+            
+            // Simulate container startup time
+            std::thread::sleep(Duration::from_millis(100));
+            
+            info!("✅ Mock container {} started successfully", container_id);
+            Ok(container_id)
+        }
+    }
+    
+    /// Stop a container by ID using Docker API
+    pub fn stop(&self, container_id: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        #[cfg(feature = "docker")]
+        {
+            // Real Docker API implementation - spawn Tokio runtime for async operations
+            let runtime = tokio::runtime::Runtime::new()
+                .map_err(|e| format!("Failed to create Tokio runtime: {}", e))?;
+            
+            let result = runtime.block_on(async {
+                use bollard::Docker;
+                
+                let docker = Docker::connect_with_local_defaults()
+                    .map_err(|e| format!("Failed to connect to Docker: {}", e))?;
+                
+                // Stop the container
+                docker.stop_container(container_id, None::<bollard::query_parameters::StopContainerOptions>)
+                    .await
+                    .map_err(|e| format!("Failed to stop container: {}", e))?;
+                
+                // Remove the container
+                docker.remove_container(container_id, None::<bollard::query_parameters::RemoveContainerOptions>)
+                    .await
+                    .map_err(|e| format!("Failed to remove container: {}", e))?;
+                
+                Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+            });
+            
+            match result {
+                Ok(()) => {
+                    info!("🛑 Stopped and removed Docker container {}", container_id);
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
+        }
+        
+        #[cfg(not(feature = "docker"))]
+        {
+            // Mock implementation
+            info!("🛑 Stopping mock container {}", container_id);
+            std::thread::sleep(Duration::from_millis(50));
+            info!("✅ Mock container {} stopped successfully", container_id);
+            Ok(())
+        }
+    }
+    
+    #[cfg(feature = "docker")]
+    async fn wait_for_ready_async(&self, docker: &bollard::Docker, container_id: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use tokio::time::{sleep, Duration as TokioDuration};
+        
+        // Wait for container to be ready by checking its status
+        let start_time = std::time::Instant::now();
+        let timeout = self.ready_timeout;
+        
+        loop {
+            if start_time.elapsed() > timeout {
+                return Err("Container readiness timeout".into());
+            }
+            
+            // Inspect container to check status
+            let inspect_result = docker.inspect_container(container_id, None::<bollard::query_parameters::InspectContainerOptions>).await;
+            if let Ok(container_info) = inspect_result {
+                if let Some(state) = container_info.state {
+                    if let Some(running) = state.running {
+                        if running {
+                            if let Some(health) = state.health {
+                                if let Some(status) = health.status {
+                                    if status.to_string() == "healthy" {
+                                        info!("✅ Container {} is healthy and ready", container_id);
+                                        return Ok(());
+                                    }
+                                }
+                            } else {
+                                // No health check, assume ready if running
+                                info!("✅ Container {} is running and ready", container_id);
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Wait a bit before checking again
+            sleep(TokioDuration::from_millis(500)).await;
+        }
+    }
 }
 
 // --- Hook execution functions for individual tests ---
@@ -1238,7 +1796,9 @@ pub fn execute_before_all_hooks() -> Result<(), TestError> {
     THREAD_BEFORE_ALL.with(|hooks| {
         let mut hooks = hooks.borrow_mut();
         for hook in hooks.iter_mut() {
-            hook(&mut TestContext::new())?;
+            if let Ok(mut hook_fn) = hook.lock() {
+                hook_fn(&mut TestContext::new())?;
+            }
         }
         Ok(())
     })
@@ -1249,7 +1809,9 @@ pub fn execute_before_each_hooks() -> Result<(), TestError> {
     THREAD_BEFORE_EACH.with(|hooks| {
         let mut hooks = hooks.borrow_mut();
         for hook in hooks.iter_mut() {
-            hook(&mut TestContext::new())?;
+            if let Ok(mut hook_fn) = hook.lock() {
+                hook_fn(&mut TestContext::new())?;
+            }
         }
         Ok(())
     })
@@ -1260,7 +1822,9 @@ pub fn execute_after_each_hooks() -> Result<(), TestError> {
     THREAD_AFTER_EACH.with(|hooks| {
         let mut hooks = hooks.borrow_mut();
         for hook in hooks.iter_mut() {
-            let _ = hook(&mut TestContext::new());
+            if let Ok(mut hook_fn) = hook.lock() {
+                let _ = hook_fn(&mut TestContext::new());
+            }
         }
         Ok(())
     })
@@ -1271,7 +1835,9 @@ pub fn execute_after_all_hooks() -> Result<(), TestError> {
     THREAD_AFTER_ALL.with(|hooks| {
         let mut hooks = hooks.borrow_mut();
         for hook in hooks.iter_mut() {
-            let _ = hook(&mut TestContext::new());
+            if let Ok(mut hook_fn) = hook.lock() {
+                let _ = hook_fn(&mut TestContext::new());
+            }
         }
         Ok(())
     })

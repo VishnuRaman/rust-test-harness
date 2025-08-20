@@ -178,10 +178,12 @@ fn main() {
     println!("📊 HTML Reporting Demo");
     println!("=====================");
     println!("You can also generate HTML reports for your tests!");
+    println!("HTML reports are automatically stored in target/test-reports/");
     println!();
     println!("Option 1: Environment Variable");
     println!("  export TEST_HTML_REPORT=basic_usage_report.html");
     println!("  cargo test --example basic_usage");
+    println!("  # Report will be saved to: target/test-reports/basic_usage_report.html");
     println!();
     println!("Option 2: Programmatic Configuration");
     println!("  use rust_test_harness::run_tests_with_config;");
@@ -190,6 +192,7 @@ fn main() {
     println!("      ..Default::default()");
     println!("  }};");
     println!("  run_tests_with_config(config);");
+    println!("  # Report will be saved to: target/test-reports/basic_usage_report.html");
     println!();
     println!("📖 HTML Report Features:");
     println!("  🔽 Expandable test details");
@@ -197,4 +200,5 @@ fn main() {
     println!("  ⌨️  Keyboard shortcuts");
     println!("  🚨 Auto-expand failed tests");
     println!("  📱 Responsive design");
+    println!("  📁 Auto-organized in target/test-reports/");
 } 

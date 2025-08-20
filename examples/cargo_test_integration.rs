@@ -160,7 +160,7 @@ mod feature_tests {
         Ok(())
     });
     
-    test_case_named!("test_string_reversal", |_ctx| {
+    test_case_named!(test_string_reversal, |_ctx| {
         let processor_sensitive = StringProcessor::new(true);
         let processor_insensitive = StringProcessor::new(false);
         

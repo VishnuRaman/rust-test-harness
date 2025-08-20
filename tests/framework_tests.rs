@@ -1,5 +1,5 @@
 use rust_test_harness::{
-    DockerRunOptions, Readiness, TestConfig,
+    TestConfig, TimeoutConfig,
     TestError, test, before_all, before_each, after_each, after_all
 };
 use std::time::Duration;
@@ -94,6 +94,7 @@ fn test_test_filtering() {
         color: Some(false),
         html_report: None,
         skip_hooks: None,
+        timeout_config: TimeoutConfig::default(),
     };
     
     test("filtering_first_test_unique", |_| Ok(()));
@@ -118,10 +119,9 @@ fn test_tag_filtering() {
         color: Some(false),
         html_report: None,
         skip_hooks: None,
+        timeout_config: TimeoutConfig::default(),
     };
     
-    // Note: We'll need to implement test_with_tags for this to work properly
-    // For now, just test basic functionality
     test("tag_filtering_untagged_test_unique", |_| Ok(()));
     
     let result = rust_test_harness::run_tests_with_config(config);
@@ -130,49 +130,9 @@ fn test_tag_filtering() {
     assert_eq!(result, 0);
 }
 
-#[test]
-fn test_docker_options_builder() {
-    let opts = DockerRunOptions::new("nginx:alpine")
-        .env("FOO", "bar")
-        .port(8080, 80)
-        .arg("--name")
-        .arg("test-container")
-        .name("test-container")
-        .label("test", "true")
-        .ready_timeout(Duration::from_secs(30))
-        .readiness(Readiness::PortOpen(80));
-    
-    assert_eq!(opts.image, "nginx:alpine");
-    assert_eq!(opts.env, vec![("FOO".to_string(), "bar".to_string())]);
-    assert_eq!(opts.ports, vec![(8080, 80)]);
-    assert_eq!(opts.args, vec!["--name", "test-container"]);
-    assert_eq!(opts.name, Some("test-container".to_string()));
-    assert_eq!(opts.labels, vec![("test".to_string(), "true".to_string())]);
-    assert_eq!(opts.ready_timeout, Duration::from_secs(30));
-    
-    match opts.readiness {
-        Readiness::PortOpen(80) => {},
-        _ => assert!(false, "Expected PortOpen(80)"),
-    }
-}
 
-#[test]
-fn test_docker_options_default() {
-    let opts = DockerRunOptions::default();
-    
-    assert_eq!(opts.image, "alpine:latest");
-    assert!(opts.env.is_empty());
-    assert!(opts.ports.is_empty());
-    assert!(opts.args.is_empty());
-    assert_eq!(opts.ready_timeout, Duration::from_secs(15));
-    assert_eq!(opts.name, None);
-    assert!(opts.labels.is_empty());
-    
-    match opts.readiness {
-        Readiness::Running => {},
-        _ => assert!(false, "Expected Running"),
-    }
-}
+
+
 
 #[test]
 fn test_error_types() {
@@ -188,8 +148,7 @@ fn test_error_types() {
     let timeout_error = TestError::Timeout(Duration::from_secs(5));
     assert_eq!(timeout_error.to_string(), "timeout after 5s");
     
-    let docker_error = TestError::DockerError("docker issue".to_string());
-    assert_eq!(docker_error.to_string(), "docker error: docker issue");
+
 }
 
 #[test]
@@ -305,50 +264,9 @@ fn test_test_timeout() {
     assert_eq!(result, 0);
 }
 
-#[test]
-fn test_docker_options_edge_cases() {
-    // Test edge cases in Docker options
-    
-    // Test with empty image name (should handle gracefully)
-    let opts = DockerRunOptions::new("")
-        .env("", "") // Empty key-value
-        .port(0, 0) // Zero ports
-        .arg("") // Empty argument
-        .label("", ""); // Empty label
-    
-    assert_eq!(opts.image, "");
-    assert_eq!(opts.env, vec![("".to_string(), "".to_string())]);
-    assert_eq!(opts.ports, vec![(0, 0)]);
-    assert_eq!(opts.args, vec![""]);
-    assert_eq!(opts.labels, vec![("".to_string(), "".to_string())]);
-    
-    // Test with very long values
-    let long_string = "a".repeat(1000);
-    let opts = DockerRunOptions::new(&long_string)
-        .env(&long_string, &long_string)
-        .name(&long_string);
-    
-    assert_eq!(opts.image, long_string);
-    assert_eq!(opts.env, vec![(long_string.clone(), long_string.clone())]);
-    assert_eq!(opts.name, Some(long_string));
-}
 
-#[test]
-fn test_docker_readiness_variants() {
-    // Test all readiness variants
-    
-    let opts_running = DockerRunOptions::new("alpine").readiness(Readiness::Running);
-    match opts_running.readiness {
-        Readiness::Running => {},
-        _ => panic!("Expected Running readiness"),
-    }
-    
-    let opts_port = DockerRunOptions::new("alpine").readiness(Readiness::PortOpen(8080));
-    match opts_port.readiness {
-        Readiness::PortOpen(8080) => {},
-        _ => panic!("Expected PortOpen(8080) readiness"),
-    }
-}
+
+
 
 #[test]
 fn test_error_conversion() {
@@ -366,7 +284,6 @@ fn test_error_conversion() {
 #[test]
 fn test_config_environment_override() {
     // Test that environment variables can override config defaults
-    // Note: This test may need to be adjusted based on actual implementation
     
     let config = TestConfig::default();
     
