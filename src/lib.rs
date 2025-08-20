@@ -1112,7 +1112,7 @@ impl From<String> for TestError {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TimeoutStrategy {
     /// Simple timeout - just report when exceeded
     Simple,
@@ -1128,7 +1128,7 @@ impl Default for TimeoutStrategy {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimeoutConfig {
     pub strategy: TimeoutStrategy,
 }
