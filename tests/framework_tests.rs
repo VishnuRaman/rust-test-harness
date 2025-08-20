@@ -4,6 +4,7 @@ use rust_test_harness::{
 };
 use std::time::Duration;
 use log::info;
+use atty;
 
 #[test]
 fn test_basic_passing_test() {
@@ -160,7 +161,9 @@ fn test_test_runner_config() {
     assert!(config.skip_tags.is_empty());
     assert_eq!(config.max_concurrency, None);
     assert_eq!(config.shuffle_seed, None);
-    assert_eq!(config.color, Some(true)); // Should default to true on TTY
+    // Color defaults to TTY detection - true in terminal, false in CI
+    let expected_color = atty::is(atty::Stream::Stdout);
+    assert_eq!(config.color, Some(expected_color));
     assert_eq!(config.html_report, None);
     assert_eq!(config.skip_hooks, None);
 }
