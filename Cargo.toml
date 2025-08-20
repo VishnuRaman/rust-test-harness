@@ -14,10 +14,17 @@ log = "0.4"
 env_logger = "0.11"
 atty = "0.2"
 uuid = { version = "1.0", features = ["v4"] }
+rayon = "1.8"
+chrono = { version = "0.4", features = ["serde"] }
 
-[[bin]]
-name = "rust-test-harness"
-path = "src/main.rs"
+# Core examples demonstrating the main usage patterns
+[[example]]
+name = "minimal_rust_style"
+path = "examples/minimal_rust_style.rs"
+
+[[example]]
+name = "rust_style_tests"
+path = "examples/rust_style_tests.rs"
 
 [[example]]
 name = "basic_usage"
@@ -27,16 +34,21 @@ path = "examples/basic_usage.rs"
 name = "advanced_features"
 path = "examples/advanced_features.rs"
 
+# Real-world examples
 [[example]]
 name = "real_world_calculator"
 path = "examples/real_world_calculator.rs"
 
-
-
-[[example]]
-name = "realistic_database"
-path = "examples/realistic_database.rs"
-
 [[example]]
 name = "mongodb_integration"
 path = "examples/mongodb_integration.rs"
+
+# Integration examples
+[[example]]
+name = "cargo_test_integration"
+path = "examples/cargo_test_integration.rs"
+
+# HTML Reporting example
+[[example]]
+name = "html_reporting"
+path = "examples/html_reporting.rs"
