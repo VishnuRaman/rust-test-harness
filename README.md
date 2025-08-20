@@ -289,13 +289,137 @@ let container = ContainerConfig::new("redis:alpine")
 
 **Available Methods:**
 - `.port(host_port, container_port)` - Map host ports to container ports
+- `.auto_port(container_port)` - Automatically assign available host port for container port
 - `.env(key, value)` - Set environment variables
 - `.name(name)` - Set container name
 - `.ready_timeout(duration)` - Set readiness timeout
+- `.no_auto_cleanup()` - Disable automatic cleanup (containers persist after tests)
 
 **Container Lifecycle Methods:**
-- `.start()` - Start container and return container ID
+- `.start()` - Start container and return `ContainerInfo`
 - `.stop(container_id)` - Stop container by ID
+
+**Auto-Port Functionality:**
+The framework automatically finds available ports on your system, eliminating port conflicts:
+
+```rust
+let container = ContainerConfig::new("nginx:alpine")
+    .auto_port(80)        // Automatically assign available host port for container port 80
+    .auto_port(443);      // Automatically assign available host port for container port 443
+
+let container_info = container.start()?;
+println!("Container running on: {}", container_info.ports_summary());
+println!("Web accessible at: {}", container_info.primary_url().unwrap());
+```
+
+**ContainerInfo Object:**
+When you start a container, you get a `ContainerInfo` object with:
+
+- **Port Information**: Easy access to host ports and URLs
+- **Container Details**: ID, image, name, and status
+- **Convenience Methods**: Get URLs, port mappings, and summaries
+
+```rust
+let container_info = container.start()?;
+
+// Get the host port for a specific container port
+if let Some(host_port) = container_info.host_port_for(27017) {
+    println!("MongoDB accessible at localhost:{}", host_port);
+}
+
+// Get all URLs
+for url in &container_info.urls {
+    println!("Service available at: {}", url);
+}
+
+// Get port summary
+println!("Ports: {}", container_info.ports_summary());
+```
+
+## 🌐 Accessing Container Ports and URLs
+
+The framework provides comprehensive access to container port information, making it easy to connect to your services:
+
+### **Getting Host Ports**
+
+```rust
+let container = ContainerConfig::new("postgres:13-alpine")
+    .auto_port(5432)    // Auto-assign available host port
+    .env("POSTGRES_PASSWORD", "testpass");
+
+let container_info = container.start()?;
+
+// Get the actual host port that was assigned
+if let Some(host_port) = container_info.host_port_for(5432) {
+    println!("PostgreSQL running on: localhost:{}", host_port);
+    
+    // Use in connection strings
+    let conn_str = format!("postgresql://user:pass@localhost:{}/db", host_port);
+}
+```
+
+### **Getting Service URLs**
+
+```rust
+let web_container = ContainerConfig::new("nginx:alpine")
+    .auto_port(80)
+    .auto_port(443);
+
+let web_info = web_container.start()?;
+
+// Get ready-to-use URLs
+if let Some(http_url) = web_info.url_for_port(80) {
+    println!("HTTP service: {}", http_url);  // http://localhost:52341
+    
+    // Use directly in HTTP clients
+    let response = reqwest::get(&http_url).await?;
+}
+
+// Get primary URL (first port)
+if let Some(primary) = web_info.primary_url() {
+    println!("Main service: {}", primary);
+}
+```
+
+### **Real-World Usage Patterns**
+
+```rust
+// Pattern 1: Database Testing
+let db_info = postgres_container.start()?;
+if let Some(port) = db_info.host_port_for(5432) {
+    std::env::set_var("DATABASE_URL", format!("postgresql://localhost:{}/test", port));
+    // Now your application can connect using the environment variable
+}
+
+// Pattern 2: API Testing
+let api_info = api_container.start()?;
+if let Some(api_url) = api_info.primary_url() {
+    let client = reqwest::Client::new();
+    let response = client.get(&format!("{}/health", api_url)).send().await?;
+    assert_eq!(response.status(), 200);
+}
+
+// Pattern 3: Multiple Services
+let web_info = web_container.start()?;
+let db_info = db_container.start()?;
+
+println!("Services started:");
+println!("  Web: {}", web_info.ports_summary());
+println!("  DB:  {}", db_info.ports_summary());
+
+// All ports are different - no conflicts!
+```
+
+### **ContainerInfo Methods Reference**
+
+| Method | Purpose | Example |
+|--------|---------|---------|
+| `host_port_for(container_port)` | Get host port for specific container port | `container_info.host_port_for(80)` |
+| `url_for_port(container_port)` | Get URL for specific container port | `container_info.url_for_port(80)` |
+| `primary_url()` | Get URL for first port | `container_info.primary_url()` |
+| `ports_summary()` | Human-readable port mappings | `container_info.ports_summary()` |
+| `port_mappings` | All `(host_port, container_port)` pairs | `container_info.port_mappings` |
+| `urls` | All service URLs | `container_info.urls` |
 
 **Example with PostgreSQL:**
 ```rust
@@ -328,6 +452,8 @@ Check out the `examples/` directory for comprehensive examples:
 - `advanced_features.rs` - Advanced features and patterns
 - `real_world_calculator.rs` - Real-world application testing
 - `mongodb_integration.rs` - **NEW!** Database testing with container hooks (recommended approach)
+- `auto_port_demo.rs` - **NEW!** Auto-port functionality and container management demo
+- `container_port_access.rs` - **NEW!** Detailed guide on accessing container ports and URLs
 - `cargo_test_integration.rs` - Integration with cargo test
 
 ### Container Management Examples
@@ -354,6 +480,18 @@ cargo test --example rust_style_tests test_calculator_new
 
 # HTML reports are automatically generated in target/test-reports/
 # when using examples with HTML reporting enabled
+```
+
+**Port Access Examples:**
+```bash
+# See auto-port functionality in action
+cargo run --example auto_port_demo
+
+# Learn how to access container ports and URLs
+cargo run --example container_port_access
+
+# See real Docker integration (requires Docker)
+cargo run --example container_port_access --features docker
 ```
 
 ## Container Management Patterns
@@ -497,7 +635,7 @@ The framework is fully functional and production-ready. All features work correc
 
 ## Current Status
 
-**✅ Framework Status: Production Ready (v0.1.0)**
+**✅ Framework Status: Production Ready (v0.1.1)**
 
 The framework is fully functional and production-ready with:
 - **Comprehensive Test Coverage**: All features thoroughly tested

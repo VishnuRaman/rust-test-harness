@@ -131,6 +131,96 @@ fn test_tag_filtering() {
     assert_eq!(result, 0);
 }
 
+#[test]
+fn test_test_with_tags_macro() {
+    // Test that test_with_tags macro works correctly
+    use rust_test_harness::test_with_tags;
+    
+    test_with_tags("tagged_test_1", vec!["fast", "unit"], |_| Ok(()));
+    test_with_tags("tagged_test_2", vec!["slow", "integration"], |_| Ok(()));
+    test_with_tags("tagged_test_3", vec!["fast", "integration"], |_| Ok(()));
+    
+    // Verify tests were registered with correct tags
+    let result = rust_test_harness::run_tests();
+    assert_eq!(result, 0);
+}
+
+#[test]
+fn test_tag_filtering_functionality() {
+    // Test that tag filtering actually works by creating tagged tests
+    use rust_test_harness::test_with_tags;
+    
+    // Create tests with different tags
+    test_with_tags("fast_unit_test", vec!["fast", "unit"], |_| Ok(()));
+    test_with_tags("slow_integration_test", vec!["slow", "integration"], |_| Ok(()));
+    test_with_tags("fast_integration_test", vec!["fast", "integration"], |_| Ok(()));
+    
+    // Test 1: Skip slow tests
+    let config_slow = TestConfig {
+        skip_tags: vec!["slow".to_string()],
+        ..Default::default()
+    };
+    
+    let result_slow = rust_test_harness::run_tests_with_config(config_slow);
+    assert_eq!(result_slow, 0);
+    
+    // Test 2: Skip integration tests
+    let config_integration = TestConfig {
+        skip_tags: vec!["integration".to_string()],
+        ..Default::default()
+    };
+    
+    let result_integration = rust_test_harness::run_tests_with_config(config_integration);
+    assert_eq!(result_integration, 0);
+    
+    // Test 3: Skip multiple tags
+    let config_multiple = TestConfig {
+        skip_tags: vec!["slow".to_string(), "integration".to_string()],
+        ..Default::default()
+    };
+    
+    let result_multiple = rust_test_harness::run_tests_with_config(config_multiple);
+    assert_eq!(result_multiple, 0);
+}
+
+#[test]
+fn test_tag_filtering_with_environment_variable() {
+    // Test that TEST_SKIP_TAGS environment variable works
+    use rust_test_harness::test_with_tags;
+    
+    // Create tagged tests
+    test_with_tags("env_tagged_test_1", vec!["ci", "slow"], |_| Ok(()));
+    test_with_tags("env_tagged_test_2", vec!["fast", "unit"], |_| Ok(()));
+    
+    // Set environment variable to skip slow tests
+    std::env::set_var("TEST_SKIP_TAGS", "slow");
+    
+    let result = rust_test_harness::run_tests();
+    assert_eq!(result, 0);
+    
+    // Clean up environment variable
+    std::env::remove_var("TEST_SKIP_TAGS");
+}
+
+#[test]
+fn test_test_runner_config() {
+    // Ensure environment is clean for this test
+    std::env::remove_var("TEST_SKIP_TAGS");
+    
+    let config = TestConfig::default();
+    
+    // These should be None by default when env vars aren't set
+    assert_eq!(config.filter, None);
+    assert!(config.skip_tags.is_empty());
+    assert_eq!(config.max_concurrency, None);
+    assert_eq!(config.shuffle_seed, None);
+    // Color defaults to TTY detection - true in terminal, false in CI
+    let expected_color = atty::is(atty::Stream::Stdout);
+    assert_eq!(config.color, Some(expected_color));
+    assert_eq!(config.html_report, None);
+    assert_eq!(config.skip_hooks, None);
+}
+
 
 
 
@@ -152,21 +242,7 @@ fn test_error_types() {
 
 }
 
-#[test]
-fn test_test_runner_config() {
-    let config = TestConfig::default();
-    
-    // These should be None by default when env vars aren't set
-    assert_eq!(config.filter, None);
-    assert!(config.skip_tags.is_empty());
-    assert_eq!(config.max_concurrency, None);
-    assert_eq!(config.shuffle_seed, None);
-    // Color defaults to TTY detection - true in terminal, false in CI
-    let expected_color = atty::is(atty::Stream::Stdout);
-    assert_eq!(config.color, Some(expected_color));
-    assert_eq!(config.html_report, None);
-    assert_eq!(config.skip_hooks, None);
-}
+
 
 #[test]
 fn test_parallel_execution_config() {

@@ -90,7 +90,7 @@ mod tests {
     });
     
     // Test with Docker support using Container hooks (recommended approach)
-    test_case!(test_with_docker, |ctx| {
+    test_case!(test_with_docker, |ctx: &mut rust_test_harness::TestContext| {
         // Setup hooks for this test
         setup_hooks();
         

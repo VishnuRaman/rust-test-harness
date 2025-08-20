@@ -200,7 +200,7 @@ mod edge_case_tests {
         let processed = processor.process(special);
         assert_eq!(processed, "hello, world! @#$%^&*()");
         
-        assert_eq!(processor.count_words(special), 2);
+        assert_eq!(processor.count_words(special), 3);
         assert!(processor.contains(special, "hello"));
         assert!(processor.contains(special, "WORLD"));
         

@@ -10,6 +10,9 @@ use log::{info, warn, error};
 // Global shared context for before_all/after_all hooks
 static GLOBAL_SHARED_DATA: OnceCell<Arc<Mutex<HashMap<String, String>>>> = OnceCell::new();
 
+// Global container registry for automatic cleanup
+static CONTAINER_REGISTRY: OnceCell<Arc<Mutex<Vec<String>>>> = OnceCell::new();
+
 pub fn get_global_context() -> Arc<Mutex<HashMap<String, String>>> {
     GLOBAL_SHARED_DATA.get_or_init(|| Arc::new(Mutex::new(HashMap::new()))).clone()
 }
@@ -18,6 +21,47 @@ pub fn clear_global_context() {
     if let Some(global_ctx) = GLOBAL_SHARED_DATA.get() {
         if let Ok(mut map) = global_ctx.lock() {
             map.clear();
+        }
+    }
+}
+
+pub fn get_container_registry() -> Arc<Mutex<Vec<String>>> {
+    CONTAINER_REGISTRY.get_or_init(|| Arc::new(Mutex::new(Vec::new()))).clone()
+}
+
+pub fn register_container_for_cleanup(container_id: &str) {
+    if let Ok(mut containers) = get_container_registry().lock() {
+        containers.push(container_id.to_string());
+        info!("📝 Registered container {} for automatic cleanup", container_id);
+    }
+}
+
+pub fn cleanup_all_containers() {
+    if let Ok(mut containers) = get_container_registry().lock() {
+        info!("🧹 Cleaning up {} registered containers", containers.len());
+        let container_ids: Vec<String> = containers.drain(..).collect();
+        drop(containers); // Drop the lock before processing
+        
+        // Clean up containers with timeout protection
+        for container_id in container_ids {
+            let config = ContainerConfig::new("dummy"); // dummy config for cleanup
+            
+            // Use a timeout to prevent hanging
+            let stop_result = std::panic::catch_unwind(|| {
+                // Set a reasonable timeout for container stop operations
+                let stop_future = config.stop(&container_id);
+                
+                // In a real implementation, we'd use async/await with timeout
+                // For now, we'll just attempt the stop and log any issues
+                match stop_future {
+                    Ok(_) => info!("✅ Successfully stopped container {}", container_id),
+                    Err(e) => warn!("Failed to cleanup container {}: {}", container_id, e),
+                }
+            });
+            
+            if let Err(panic_info) = stop_result {
+                warn!("Panic while stopping container {}: {:?}", container_id, panic_info);
+            }
         }
     }
 }
@@ -1583,9 +1627,54 @@ macro_rules! test_case_named {
 pub struct ContainerConfig {
     pub image: String,
     pub ports: Vec<(u16, u16)>, // (host_port, container_port)
+    pub auto_ports: Vec<u16>, // container ports that should get auto-assigned host ports
     pub env: Vec<(String, String)>,
     pub name: Option<String>,
     pub ready_timeout: Duration,
+    pub auto_cleanup: bool, // automatically cleanup on drop/test end
+}
+
+#[derive(Debug, Clone)]
+pub struct ContainerInfo {
+    pub container_id: String,
+    pub image: String,
+    pub name: Option<String>,
+    pub urls: Vec<String>, // URLs for all exposed ports
+    pub port_mappings: Vec<(u16, u16)>, // (host_port, container_port) for all ports
+    pub auto_cleanup: bool,
+}
+
+impl ContainerInfo {
+    /// Get the primary URL (first port)
+    pub fn primary_url(&self) -> Option<&str> {
+        self.urls.first().map(|s| s.as_str())
+    }
+    
+    /// Get host:port for a specific container port
+    pub fn url_for_port(&self, container_port: u16) -> Option<String> {
+        self.port_mappings.iter()
+            .find(|(_, cp)| *cp == container_port)
+            .map(|(host_port, _)| format!("localhost:{}", host_port))
+    }
+    
+    /// Get host port for a specific container port
+    pub fn host_port_for(&self, container_port: u16) -> Option<u16> {
+        self.port_mappings.iter()
+            .find(|(_, cp)| *cp == container_port)
+            .map(|(host_port, _)| *host_port)
+    }
+    
+    /// Get all exposed ports as a formatted string
+    pub fn ports_summary(&self) -> String {
+        if self.port_mappings.is_empty() {
+            "No ports exposed".to_string()
+        } else {
+            self.port_mappings.iter()
+                .map(|(host_port, container_port)| format!("{}->{}", host_port, container_port))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    }
 }
 
 impl ContainerConfig {
@@ -1593,9 +1682,11 @@ impl ContainerConfig {
         Self {
             image: image.to_string(),
             ports: Vec::new(),
+            auto_ports: Vec::new(),
             env: Vec::new(),
             name: None,
             ready_timeout: Duration::from_secs(30),
+            auto_cleanup: true, // enable auto-cleanup by default
         }
     }
     
@@ -1619,8 +1710,30 @@ impl ContainerConfig {
         self
     }
     
+    /// Add a port that should be automatically assigned an available host port
+    pub fn auto_port(mut self, container_port: u16) -> Self {
+        self.auto_ports.push(container_port);
+        self
+    }
+    
+    /// Disable automatic cleanup (containers will persist after tests)
+    pub fn no_auto_cleanup(mut self) -> Self {
+        self.auto_cleanup = false;
+        self
+    }
+    
+    /// Find an available port on the host
+    fn find_available_port() -> Result<u16, Box<dyn std::error::Error + Send + Sync>> {
+        use std::net::TcpListener;
+        
+        // Try to bind to port 0 to let the OS assign an available port
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let addr = listener.local_addr()?;
+        Ok(addr.port())
+    }
+    
     /// Start a container with this configuration using Docker API
-    pub fn start(&self) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    pub fn start(&self) -> Result<ContainerInfo, Box<dyn std::error::Error + Send + Sync>> {
         #[cfg(feature = "docker")]
         {
             // Real Docker API implementation - spawn Tokio runtime for async operations
@@ -1635,14 +1748,32 @@ impl ContainerConfig {
                 let docker = Docker::connect_with_local_defaults()
                     .map_err(|e| format!("Failed to connect to Docker: {}", e))?;
                 
-                // Build port bindings
+                // Build port bindings - handle both manual and auto-ports
                 let mut port_bindings = PortMap::new();
+                let mut auto_port_mappings = Vec::new();
+                
+                // Handle manual port mappings
                 for (host_port, container_port) in &self.ports {
                     let binding = vec![PortBinding {
                         host_ip: Some("127.0.0.1".to_string()),
                         host_port: Some(host_port.to_string()),
                     }];
                     port_bindings.insert(format!("{}/tcp", container_port), Some(binding));
+                }
+                
+                // Handle auto-ports - find available host ports
+                for container_port in &self.auto_ports {
+                    let host_port = Self::find_available_port()
+                        .map_err(|e| format!("Failed to find available port: {}", e))?;
+                    
+                    let binding = vec![PortBinding {
+                        host_ip: Some("127.0.0.1".to_string()),
+                        host_port: Some(host_port.to_string()),
+                    }];
+                    port_bindings.insert(format!("{}/tcp", container_port), Some(binding));
+                    
+                    // Store the mapping for return
+                    auto_port_mappings.push((host_port, *container_port));
                 }
                 
                 // Build environment variables
@@ -1675,13 +1806,44 @@ impl ContainerConfig {
                 // Wait for container to be ready
                 self.wait_for_ready_async(&docker, &id).await?;
                 
-                Ok::<String, Box<dyn std::error::Error + Send + Sync>>(id)
+                // Build port mappings and URLs
+                let mut all_port_mappings = self.ports.clone();
+                all_port_mappings.extend(auto_port_mappings);
+                
+                let urls: Vec<String> = all_port_mappings.iter()
+                    .map(|(host_port, _)| format!("http://localhost:{}", host_port))
+                    .collect();
+                
+                let container_info = ContainerInfo {
+                    container_id: id.clone(),
+                    image: self.image.clone(),
+                    name: self.name.clone(),
+                    urls,
+                    port_mappings: all_port_mappings,
+                    auto_cleanup: self.auto_cleanup,
+                };
+                
+                Ok::<ContainerInfo, Box<dyn std::error::Error + Send + Sync>>(container_info)
             });
             
             match result {
-                Ok(id) => {
-                    info!("🚀 Started Docker container {} with image {}", id, self.image);
-                    Ok(id)
+                Ok(container_info) => {
+                    info!("🚀 Started Docker container {} with image {}", container_info.container_id, self.image);
+                    
+                    // Register for auto-cleanup if enabled
+                    if container_info.auto_cleanup {
+                        register_container_for_cleanup(&container_info.container_id);
+                    }
+                    
+                    // Log port information
+                    if !container_info.port_mappings.is_empty() {
+                        info!("🌐 Container {} exposed on ports:", container_info.container_id);
+                        for (host_port, container_port) in &container_info.port_mappings {
+                            info!("   {} -> {} (http://localhost:{})", host_port, container_port, host_port);
+                        }
+                    }
+                    
+                    Ok(container_info)
                 }
                 Err(e) => Err(e),
             }
@@ -1696,8 +1858,39 @@ impl ContainerConfig {
             // Simulate container startup time
             std::thread::sleep(Duration::from_millis(100));
             
+            // Build port mappings and URLs for mock
+            let mut all_port_mappings = self.ports.clone();
+            let mut auto_port_mappings = Vec::new();
+            
+            // Generate mock auto-ports
+            for container_port in &self.auto_ports {
+                let mock_host_port = 10000 + (container_port % 1000); // deterministic mock port
+                auto_port_mappings.push((mock_host_port, *container_port));
+            }
+            all_port_mappings.extend(auto_port_mappings);
+            
+            let urls: Vec<String> = all_port_mappings.iter()
+                .map(|(host_port, _)| format!("http://localhost:{}", host_port))
+                .collect();
+            
+            let container_info = ContainerInfo {
+                container_id: container_id.clone(),
+                image: self.image.clone(),
+                name: self.name.clone(),
+                urls,
+                port_mappings: all_port_mappings,
+                auto_cleanup: self.auto_cleanup,
+            };
+            
             info!("✅ Mock container {} started successfully", container_id);
-            Ok(container_id)
+            if !container_info.port_mappings.is_empty() {
+                info!("🌐 Mock container {} exposed on ports:", container_id);
+                for (host_port, container_port) in &container_info.port_mappings {
+                    info!("   {} -> {} (http://localhost:{})", host_port, container_port, host_port);
+                }
+            }
+            
+            Ok(container_info)
         }
     }
     
@@ -1711,19 +1904,65 @@ impl ContainerConfig {
             
             let result = runtime.block_on(async {
                 use bollard::Docker;
+                use tokio::time::{timeout, Duration as TokioDuration};
                 
-                let docker = Docker::connect_with_local_defaults()
-                    .map_err(|e| format!("Failed to connect to Docker: {}", e))?;
+                // Connect to Docker with timeout
+                let docker_result = timeout(
+                    TokioDuration::from_secs(5), // 5 second timeout for connection
+                    Docker::connect_with_local_defaults()
+                ).await;
                 
-                // Stop the container
-                docker.stop_container(container_id, None::<bollard::query_parameters::StopContainerOptions>)
-                    .await
-                    .map_err(|e| format!("Failed to stop container: {}", e))?;
+                let docker = match docker_result {
+                    Ok(Ok(docker)) => docker,
+                    Ok(Err(e)) => return Err(format!("Failed to connect to Docker: {}", e).into()),
+                    Err(_) => return Err("Docker connection timeout".into()),
+                };
                 
-                // Remove the container
-                docker.remove_container(container_id, None::<bollard::query_parameters::RemoveContainerOptions>)
-                    .await
-                    .map_err(|e| format!("Failed to remove container: {}", e))?;
+                // Stop the container with timeout (ignore errors for non-existent containers)
+                let stop_result = timeout(
+                    TokioDuration::from_secs(10), // 10 second timeout for stop
+                    docker.stop_container(container_id, None::<bollard::query_parameters::StopContainerOptions>)
+                ).await;
+                
+                match stop_result {
+                    Ok(Ok(())) => info!("🛑 Container {} stopped successfully", container_id),
+                    Ok(Err(e)) => {
+                        let error_msg = e.to_string();
+                        if error_msg.contains("No such container") || error_msg.contains("not found") {
+                            info!("ℹ️ Container {} already removed or doesn't exist", container_id);
+                        } else {
+                            warn!("Failed to stop container {}: {}", container_id, e);
+                            // Don't return error for cleanup operations - just log and continue
+                        }
+                    },
+                    Err(_) => {
+                        warn!("Container stop timeout for {}", container_id);
+                        // Don't return error for cleanup operations - just log and continue
+                    },
+                }
+                
+                // Remove the container with timeout (ignore errors for non-existent containers)
+                let remove_result = timeout(
+                    TokioDuration::from_secs(10), // 10 second timeout for remove
+                    docker.remove_container(container_id, None::<bollard::query_parameters::RemoveContainerOptions>)
+                ).await;
+                
+                match remove_result {
+                    Ok(Ok(())) => info!("🗑️ Container {} removed successfully", container_id),
+                    Ok(Err(e)) => {
+                        let error_msg = e.to_string();
+                        if error_msg.contains("No such container") || error_msg.contains("not found") {
+                            info!("ℹ️ Container {} already removed or doesn't exist", container_id);
+                        } else {
+                            warn!("Failed to remove container {}: {}", container_id, e);
+                            // Don't return error for cleanup operations - just log and continue
+                        }
+                    },
+                    Err(_) => {
+                        warn!("Container remove timeout for {}", container_id);
+                        // Don't return error for cleanup operations - just log and continue
+                    },
+                }
                 
                 Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
             });

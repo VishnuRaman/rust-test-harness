@@ -70,9 +70,9 @@ fn main() {
     println!("==================================================");
     println!();
     
-    // Define container configuration
+    // Define container configuration with auto-port for MongoDB
     let mongo_container = ContainerConfig::new("mongo:5.0")
-        .port(27017, 27017)
+        .auto_port(27017) // Automatically assign available host port for MongoDB
         .env("MONGO_INITDB_ROOT_USERNAME", "admin")
         .env("MONGO_INITDB_ROOT_PASSWORD", "password")
         .name("test_mongodb")
@@ -80,10 +80,11 @@ fn main() {
     
     println!("📋 Container Configuration:");
     println!("  Image: {}", mongo_container.image);
-    println!("  Ports: {:?}", mongo_container.ports);
+    println!("  Auto-ports: {:?}", mongo_container.auto_ports);
     println!("  Environment: {:?}", mongo_container.env);
     println!("  Name: {:?}", mongo_container.name);
     println!("  Ready Timeout: {:?}", mongo_container.ready_timeout);
+    println!("  Auto-cleanup: {}", mongo_container.auto_cleanup);
     println!();
     
     // Clone for before_each hook
@@ -93,12 +94,20 @@ fn main() {
     before_each(move |ctx| {
         println!("🔄 before_each: Starting MongoDB container...");
         
-        // Start the container
-        let container_id = mongo_container_before.start()
+        // Start the container and get ContainerInfo
+        let container_info = mongo_container_before.start()
             .map_err(|e| format!("Failed to start container: {}", e))?;
-        ctx.set_data("mongo_container_id", container_id.clone());
         
-        println!("✅ before_each: MongoDB container {} started", container_id);
+        // Store container info in context for tests to access
+        ctx.set_data("mongo_container_info", container_info.clone());
+        
+        // Log container details including auto-assigned ports
+        println!("✅ before_each: MongoDB container {} started", container_info.container_id);
+        println!("🌐 Container exposed on: {}", container_info.ports_summary());
+        if let Some(primary_url) = container_info.primary_url() {
+            println!("🔗 Primary URL: {}", primary_url);
+        }
+        
         Ok(())
     });
     
@@ -107,15 +116,15 @@ fn main() {
     rust_test_harness::after_each(move |ctx| {
         println!("🔄 after_each: Stopping MongoDB container...");
         
-        // Get container ID from context
-        let container_id = ctx.get_data::<String>("mongo_container_id")
-            .expect("Container ID should be available");
+        // Get container info from context
+        let container_info = ctx.get_data::<rust_test_harness::ContainerInfo>("mongo_container_info")
+            .expect("Container info should be available");
         
         // Stop the container
-        mongo_container_after.stop(&container_id)
+        mongo_container_after.stop(&container_info.container_id)
             .map_err(|e| format!("Failed to stop container: {}", e))?;
         
-        println!("✅ after_each: MongoDB container {} stopped", container_id);
+        println!("✅ after_each: MongoDB container {} stopped", container_info.container_id);
         Ok(())
     });
     
@@ -123,13 +132,24 @@ fn main() {
     test("test_mongodb_basic_operations", |ctx| {
         println!("🧪 Running test: test_mongodb_basic_operations");
         
-        // Get container ID from context
-        let container_id = ctx.get_data::<String>("mongo_container_id")
-            .expect("Container ID should be available")
-            .to_string();
+        // Get container info from context
+        let container_info = ctx.get_data::<rust_test_harness::ContainerInfo>("mongo_container_info")
+            .expect("Container info should be available");
+        
+        // Show how to access port information
+        println!("🌐 Container {} is running on:", container_info.container_id);
+        println!("   Ports: {}", container_info.ports_summary());
+        if let Some(primary_url) = container_info.primary_url() {
+            println!("   Primary URL: {}", primary_url);
+        }
+        
+        // Get the MongoDB port (27017) and show the actual host port
+        if let Some(host_port) = container_info.host_port_for(27017) {
+            println!("   MongoDB accessible at: localhost:{}", host_port);
+        }
         
         // Create MongoDB client
-        let mut client = MongoClient::new(container_id);
+        let mut client = MongoClient::new(container_info.container_id.clone());
         
         // Connect to MongoDB
         client.connect()?;
@@ -152,13 +172,16 @@ fn main() {
     test("test_mongodb_multiple_operations", |ctx| {
         println!("🧪 Running test: test_mongodb_multiple_operations");
         
-        // Get container ID from context
-        let container_id = ctx.get_data::<String>("mongo_container_id")
-            .expect("Container ID should be available")
-            .to_string();
+        // Get container info from context
+        let container_info = ctx.get_data::<rust_test_harness::ContainerInfo>("mongo_container_info")
+            .expect("Container info should be available");
+        
+        // Show container status
+        println!("🌐 Container {} status:", container_info.container_id);
+        println!("   Active ports: {}", container_info.ports_summary());
         
         // Create MongoDB client
-        let mut client = MongoClient::new(container_id);
+        let mut client = MongoClient::new(container_info.container_id.clone());
         
         // Connect to MongoDB
         client.connect()?;
