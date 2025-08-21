@@ -1783,9 +1783,17 @@ impl ContainerConfig {
                 .collect();
             
             // Create container configuration using the correct bollard 0.19 API
+            // For alpine, busybox, and ubuntu images, add a command to keep them running
+            let cmd = if self.image.contains("alpine") || self.image.contains("busybox") || self.image.contains("ubuntu") {
+                Some(vec!["sleep".to_string(), "3600".to_string()]) // Sleep for 1 hour
+            } else {
+                None
+            };
+            
             let container_config = ContainerCreateBody {
                 image: Some(self.image.clone()),
                 env: Some(env_vars),
+                cmd,
                 host_config: Some(HostConfig {
                     port_bindings: Some(port_bindings),
                     ..Default::default()
