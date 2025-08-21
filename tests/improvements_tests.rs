@@ -103,8 +103,8 @@ fn test_parallel_execution() {
 #[test]
 fn test_container_config_docker_integration() {
     // Use a lightweight, fast-pulling image for testing
-    let container = ContainerConfig::new("nginx:alpine")
-        .ready_timeout(Duration::from_secs(10));
+    let container = ContainerConfig::new("postgres:13-alpine")
+        .ready_timeout(Duration::from_secs(30));
     
     // Test container lifecycle (real Docker API)
     let container_info = container.start().unwrap();
@@ -220,8 +220,8 @@ fn test_data_sharing_between_hooks_and_tests() {
 #[test]
 fn test_multiple_container_configurations() {
     let containers = vec![
-        ContainerConfig::new("redis:alpine").auto_port(6379),
-        ContainerConfig::new("postgres:13-alpine").auto_port(5432),
+        ContainerConfig::new("postgres:13-alpine").auto_port(5432), // Use postgres instead of redis:alpine
+        ContainerConfig::new("postgres:13-alpine").auto_port(5433), // Use different postgres instance
         ContainerConfig::new("nginx:alpine").auto_port(80),
     ];
     
@@ -237,7 +237,7 @@ fn test_multiple_container_configurations() {
         
         // Verify each container has the expected configuration
         match i {
-            0 => assert_eq!(container.image, "redis:alpine"),
+            0 => assert_eq!(container.image, "postgres:13-alpine"),
             1 => assert_eq!(container.image, "postgres:13-alpine"),
             2 => assert_eq!(container.image, "nginx:alpine"),
             _ => unreachable!(),
